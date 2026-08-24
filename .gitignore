@@ -1,0 +1,20 @@
+# Session cookies — real auth tokens, never commit
+sessions/
+
+# Browser profile data — cached auth, can be large
+browser_profiles/
+
+# Debug screenshots — may show account info
+*.png
+
+# Real credential spreadsheets
+*.xlsx
+!BFL_Info_dummy.xlsx
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
