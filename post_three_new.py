@@ -126,31 +126,41 @@ def publish_post(page, post, index):
 
     human_pause(1.0, 2.0)
 
+    # Dismiss hashtag/mention autocomplete if visible
+    page.keyboard.press("Escape")
+    human_pause(0.3, 0.6)
+
     print("Submitting...", flush=True)
     submitted = False
-    for s in [
-        "div[role='dialog'] div[aria-label='Post'][role='button']",
-        "div[role='dialog'] div[aria-label='post'][role='button']",
-        "div[role='dialog'] [data-testid='react-composer-post-button']",
-    ]:
+    for name in [r"^Next$", r"^Post$"]:
         try:
-            el = page.locator(s).last
-            if el.count() > 0 and el.is_visible():
-                el.click()
+            btn = page.locator("div[role='dialog']").get_by_role(
+                "button", name=re.compile(name, re.I)
+            ).last
+            if btn.is_visible():
+                btn.click()
                 submitted = True
-                print(f"  Submitted via: {s}", flush=True)
+                print(f"  Submitted via '{name}' button", flush=True)
                 break
         except Exception:
             continue
 
     if not submitted:
-        try:
-            btn = page.locator("div[role='dialog']").get_by_role("button", name=re.compile(r"^post$", re.I)).last
-            btn.click()
-            submitted = True
-            print("  Submitted via dialog button", flush=True)
-        except Exception:
-            pass
+        for s in [
+            "div[role='dialog'] div[aria-label='Next'][role='button']",
+            "div[role='dialog'] div[aria-label='Post'][role='button']",
+            "div[role='dialog'] div[role='button']:has-text('Next')",
+            "div[role='dialog'] div[role='button']:has-text('Post')",
+        ]:
+            try:
+                el = page.locator(s).last
+                if el.count() > 0 and el.is_visible():
+                    el.click()
+                    submitted = True
+                    print(f"  Submitted via: {s}", flush=True)
+                    break
+            except Exception:
+                continue
 
     if not submitted:
         page.screenshot(path=f"/Users/macemilia/Desktop/Scripts/debug_submit{index + 1}.png")
