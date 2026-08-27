@@ -126,45 +126,57 @@ def publish_post(page, post, index):
 
     human_pause(1.0, 2.0)
 
-    # Dismiss hashtag/mention autocomplete if visible
-    page.keyboard.press("Escape")
-    human_pause(0.3, 0.6)
+    # Dismiss hashtag/mention autocomplete by clicking dialog header (safe — won't close dialog)
+    try:
+        autocomplete = page.locator("div[role='dialog'] ul[role='listbox'], div[role='dialog'] div[role='listbox']")
+        if autocomplete.count() > 0 and autocomplete.first.is_visible():
+            print("  Dismissing autocomplete...", flush=True)
+            header = page.locator("div[role='dialog'] h2").first
+            if header.is_visible():
+                header.click()
+            else:
+                page.locator("div[role='dialog']").first.click(position={"x": 10, "y": 10})
+            human_pause(0.5, 0.8)
+    except Exception:
+        pass
+
+    page.screenshot(path=f"/Users/macemilia/Desktop/Scripts/debug_submit{index + 1}.png")
+    print(f"  Screenshot saved: debug_submit{index + 1}.png", flush=True)
 
     print("Submitting...", flush=True)
     submitted = False
-    for name in [r"^Next$", r"^Post$"]:
+    for s in [
+        "div[role='dialog'] div[aria-label='Next'][role='button']",
+        "div[role='dialog'] div[aria-label='Post'][role='button']",
+        "div[role='dialog'] div[role='button']:has-text('Next')",
+        "div[role='dialog'] div[role='button']:has-text('Post')",
+    ]:
         try:
-            btn = page.locator("div[role='dialog']").get_by_role(
-                "button", name=re.compile(name, re.I)
-            ).last
-            if btn.is_visible():
-                btn.click()
+            el = page.locator(s).last
+            if el.count() > 0 and el.is_visible():
+                el.click()
                 submitted = True
-                print(f"  Submitted via '{name}' button", flush=True)
+                print(f"  Submitted via: {s}", flush=True)
                 break
         except Exception:
             continue
 
     if not submitted:
-        for s in [
-            "div[role='dialog'] div[aria-label='Next'][role='button']",
-            "div[role='dialog'] div[aria-label='Post'][role='button']",
-            "div[role='dialog'] div[role='button']:has-text('Next')",
-            "div[role='dialog'] div[role='button']:has-text('Post')",
-        ]:
-            try:
-                el = page.locator(s).last
-                if el.count() > 0 and el.is_visible():
-                    el.click()
+        try:
+            for name in [r"^Next$", r"^Post$"]:
+                btn = page.locator("div[role='dialog']").get_by_role(
+                    "button", name=re.compile(name, re.I)
+                ).last
+                if btn.count() > 0 and btn.is_visible():
+                    btn.click()
                     submitted = True
-                    print(f"  Submitted via: {s}", flush=True)
+                    print(f"  Submitted via role button '{name}'", flush=True)
                     break
-            except Exception:
-                continue
+        except Exception:
+            pass
 
     if not submitted:
-        page.screenshot(path=f"/Users/macemilia/Desktop/Scripts/debug_submit{index + 1}.png")
-        print(f"  Post button not found -- please click Post manually. Screenshot: debug_submit{index + 1}.png", flush=True)
+        print(f"  Post button not found -- please click Post manually.", flush=True)
         human_pause(20.0, 20.0)
         return False
 
