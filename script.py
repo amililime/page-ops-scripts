@@ -89,7 +89,6 @@ SHEET_CONFIGS = {
             "password":  (5,  _optional(PASSWORD_PATTERN, "8–16 chars, uppercase + digit"),  "Password"),
             "fa_2":      (6,  _re(FA_PATTERN,        "32 uppercase letters/digits"),      "2FA"),
             "email":          (7,  _re(EMAIL_PATTERN,          "valid email address"),    "Email"),
-            "email_pass":     (8,  _optional(EMAIL_PATTERN,   "valid email address"),     "Email Pass"),
             "provider":       (9,  None,                                                   "Provider"),
         },
     },

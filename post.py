@@ -1,36 +1,33 @@
 """
-Post content to a Facebook Page using a saved session.
+Post content to a Facebook Page using a Multilogin browser profile.
 
 Reads posts from a text file (3 posts separated by blank lines).
 The post containing a URL is always posted first, followed by the rest in order.
 A random delay is added between posts to appear natural.
 
 Usage:
-    python3 post.py path/to/file.xlsx --account "NOS_PAN_001" --posts path/to/posts.txt
-    python3 post.py path/to/file.xlsx --account "NOS_PAN_001" --posts path/to/posts.txt --sheet "BFL Info"
+    python3 post.py --account "NOS_PAN_001" --posts path/to/posts.txt
+    python3 post.py --account "NOS_PAN_001" --posts path/to/posts.txt --min-delay 5 --max-delay 10
 
 Requirements:
-    - A saved session for the account (run login.py --manual first)
+    - MLX_EMAIL and MLX_PASSWORD environment variables must be set.
+    - mlx_profiles.json must have an entry for the account.
+    - The Multilogin profile must already be logged in to Facebook
+      (run manual_session.py first if not).
 """
 
 import argparse
-import os
 import random
 import re
 import sys
 import time
 
-from openpyxl import load_workbook
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 
-from session_manager import load_session, save_session
+from mlx_context import start_profile_for
 
-PROFILES_DIR = os.path.join(os.path.dirname(__file__), "browser_profiles")
-
-# Delay range between posts (seconds)
-MIN_DELAY = 45
-MAX_DELAY = 90
+DEFAULT_MIN_DELAY = 45
+DEFAULT_MAX_DELAY = 90
 
 
 def parse_posts(path):
@@ -61,7 +58,6 @@ def parse_posts(path):
     while i < len(posts):
         post = posts[i]
         if post["url"] and not post["text"]:
-            # Attach to next text block if available, else to previous
             if i + 1 < len(posts) and not posts[i + 1]["url"]:
                 posts[i + 1]["url"] = post["url"]
             elif merged and not merged[-1]["url"]:
@@ -72,7 +68,6 @@ def parse_posts(path):
             merged.append(post)
         i += 1
 
-    # Put URL post first, preserve order of the rest
     url_posts  = [p for p in merged if p["url"]]
     text_posts = [p for p in merged if not p["url"]]
     return url_posts + text_posts
@@ -90,26 +85,38 @@ def human_pause(min_s=0.8, max_s=2.0):
 
 def open_composer(page):
     """Click 'What's on your mind?' in the main feed only, then wait for the dialog."""
+    import os
     page.evaluate("window.scrollTo(0, 0)")
     human_pause(1.0, 1.5)
 
     for selector in [
-        "div[role='main'] div[role='button']:has-text(\"What's on your mind?\")",
-        "div[role='main'] div[aria-label=\"What's on your mind?\"]",
-        "div[role='main'] span:has-text(\"What's on your mind?\")",
+        "div[role='main'] div[role='button']:has-text(\"What's on your mind\")",
+        "div[role='main'] div[aria-label*=\"What's on your mind\"]",
+        "div[role='main'] span:has-text(\"What's on your mind\")",
+        "div[role='button']:has-text(\"What's on your mind\")",
+        "[aria-label*=\"What's on your mind\"]",
     ]:
         try:
             el = page.locator(selector).first
             if el.is_visible():
                 el.click()
                 human_pause(2.0, 3.0)
-                # Wait for the Create post dialog to appear
-                page.wait_for_selector("div[role='dialog']", timeout=8000)
-                human_pause(1.0, 1.5)
-                return True
+                # Confirm dialog opened by waiting for the textbox, not role='dialog'
+                # (Facebook Pages use a different container structure)
+                for confirm in [
+                    "div[contenteditable='true'][role='textbox']",
+                    "div[role='dialog']",
+                    "div[aria-label='Create post']",
+                ]:
+                    try:
+                        page.wait_for_selector(confirm, timeout=5000)
+                        human_pause(1.0, 1.5)
+                        return True
+                    except Exception:
+                        continue
         except Exception:
             continue
-    # Save a screenshot so we can see what's on the page
+
     try:
         page.screenshot(path=os.path.join(os.path.dirname(__file__), "debug_composer.png"))
         print("Composer not found. Screenshot saved to debug_composer.png")
@@ -120,11 +127,9 @@ def open_composer(page):
 
 def submit_post(page):
     """Dismiss any autocomplete, then click Next/Post inside the dialog."""
-    # Dismiss hashtag/mention autocomplete if visible
     page.keyboard.press("Escape")
     human_pause(0.3, 0.6)
 
-    # Facebook Pages show "Next" instead of "Post"
     for name in [r"^Next$", r"^Post$"]:
         try:
             btn = page.locator("div[role='dialog']").get_by_role(
@@ -152,18 +157,24 @@ def submit_post(page):
     return False
 
 
+def js_navigate(page, url):
+    """Navigate using window.location so Multilogin's proxy handles auth correctly."""
+    page.evaluate(f"window.location.href = '{url}'")
+    page.wait_for_load_state("domcontentloaded")
+
+
 def publish_post(page, post, index, page_url="https://www.facebook.com/"):
     print(f"\n── Post {index + 1} {'(with link)' if post['url'] else ''} ──")
 
-    page.goto(page_url, wait_until="domcontentloaded")
-    human_pause(2.5, 4.0)
+    if page.url.rstrip("/") != page_url.rstrip("/"):
+        js_navigate(page, page_url)
+        human_pause(2.5, 4.0)
 
     print("Opening composer...")
     if not open_composer(page):
         print("Could not find composer. Skipping this post.")
         return False
 
-    # Type inside the dialog textbox
     print("Typing post content...")
     try:
         textbox = page.locator("div[role='dialog'] div[role='textbox'][contenteditable='true']").first
@@ -197,114 +208,109 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/"):
     return True
 
 
-def load_account_name(path, account_name, sheet_name):
-    """Just validates the account exists in the sheet."""
-    from login import load_credentials, SHEET_LAYOUTS
-    return load_credentials(path, account_name, sheet_name)
-
-
-def run(path, account_name, sheet_name, posts_path):
-    cookies = load_session(account_name)
-    if not cookies:
-        print(f"No saved session for '{account_name}'.")
-        print(f"Run first:  python3 login.py \"{path}\" --account \"{account_name}\" --manual")
-        sys.exit(1)
-
+def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
     posts = parse_posts(posts_path)
     print(f"Loaded {len(posts)} posts from {posts_path}")
     for i, p in enumerate(posts):
         preview = p["text"][:60].replace("\n", " ")
         print(f"  {i+1}. {'[LINK] ' if p['url'] else ''}  {preview}...")
 
-    profile_safe = account_name.replace("/", "_").replace(" ", "_")
-    user_data_dir = os.path.join(PROFILES_DIR, profile_safe)
-    os.makedirs(user_data_dir, exist_ok=True)
+    mlx, started = start_profile_for(account_name)
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            headless=False,
-            viewport={"width": 1280, "height": 800},
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            args=["--disable-blink-features=AutomationControlled"],
-        )
-
-        page = context.new_page()
-        Stealth().apply_stealth_sync(page)
-
-        print("\nRestoring session...")
-        context.add_cookies(cookies)
-        page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
-        human_pause(2.0, 3.0)
-
-        if "login" in page.url:
-            print("Session expired. Re-run login.py --manual first.")
-            context.close()
-            sys.exit(1)
-
-        # Try Switch Now button; if not found, use the known fanpage URL from last session
-        page.goto("https://www.facebook.com/", wait_until="domcontentloaded")
-        human_pause(2.0, 3.0)
-
-        switched = False
         try:
-            # Look for Switch Now in any form (button or link)
-            for locator in [
-                page.get_by_role("button", name=re.compile(r"switch now", re.I)),
-                page.get_by_role("link", name=re.compile(r"switch now", re.I)),
-                page.locator("a:has-text('Switch Now'), div[role='button']:has-text('Switch Now')"),
-            ]:
-                if locator.count() > 0:
-                    print("Switching to page...")
-                    locator.first.click()
-                    page.wait_for_load_state("domcontentloaded")
-                    human_pause(2.0, 3.0)
-                    switched = True
-                    break
-        except Exception:
-            pass
+            browser = p.chromium.connect_over_cdp(started.cdp_url)
+            context = browser.contexts[0]
+            page = context.pages[0] if context.pages else context.new_page()
 
-        if not switched:
-            print("Switch Now not found — you may need to switch manually in the browser,")
-            print("or the session is already on the fanpage. Continuing with current URL.")
+            print("\nChecking session...")
+            SUFFIXES = ["LS", "HOB", "CSI", "MF"]
 
-        active_page_url = page.url
-        print(f"Active page URL: {active_page_url}")
-        print("Session active. Starting to post...\n")
+            if "facebook.com" not in page.url:
+                js_navigate(page, "https://www.facebook.com/")
+                human_pause(2.0, 3.0)
 
-        for i, post in enumerate(posts):
-            success = publish_post(page, post, i, active_page_url)
+            if "login" in page.url:
+                print("Not logged in. Run manual_session.py first.")
+                sys.exit(1)
 
-            if success and i < len(posts) - 1:
-                delay = random.randint(MIN_DELAY, MAX_DELAY)
-                print(f"Waiting {delay}s before next post...")
-                time.sleep(delay)
+            # Check if already in page context by looking at the composer placeholder
+            already_on_page = any(
+                re.search(rf'\b{s}\b', page.url, re.I) or
+                re.search(rf'\b{s}\b', (page.locator("div[role='main']").text_content() or ""), re.I)
+                for s in SUFFIXES
+            )
 
-        save_session(account_name, context.cookies())
-        print("\nAll posts done. Session saved.")
+            if already_on_page:
+                print("Already in page context.")
+            else:
+                # Try sidebar link by category suffix
+                switched = False
+                try:
+                    all_links = page.locator("a").all()
+                    for link in all_links:
+                        text = (link.text_content() or "").strip()
+                        if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
+                            print(f"Found page in sidebar: '{text}' — clicking...")
+                            link.click()
+                            page.wait_for_load_state("domcontentloaded")
+                            human_pause(2.0, 3.0)
+                            switched = True
+                            break
+                except Exception:
+                    pass
 
-        print("Browser is open. Close it when done.")
-        try:
-            page.wait_for_event("close", timeout=0)
-        except Exception:
-            pass
+                # Fallback: Switch Now button
+                if not switched:
+                    try:
+                        for locator in [
+                            page.get_by_role("button", name=re.compile(r"switch now", re.I)),
+                            page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
+                            page.locator("a:has-text('Switch Now'), div[role='button']:has-text('Switch Now')"),
+                        ]:
+                            if locator.count() > 0:
+                                print("Clicking Switch Now...")
+                                locator.first.click()
+                                page.wait_for_load_state("domcontentloaded")
+                                human_pause(2.0, 3.0)
+                                switched = True
+                                break
+                    except Exception:
+                        pass
 
-        context.close()
+                if not switched:
+                    print("Could not find page in sidebar or Switch Now — continuing with current URL.")
+
+            active_page_url = page.url
+            print(f"Active page URL: {active_page_url}")
+            print("Session active. Starting to post...\n")
+
+            for i, post in enumerate(posts):
+                success = publish_post(page, post, i, active_page_url)
+                if success and i < len(posts) - 1:
+                    delay = random.randint(min_delay, max_delay)
+                    print(f"Waiting {delay}s before next post...")
+                    time.sleep(delay)
+
+            print("\nAll posts done.")
+            print("Browser is open. Close it when done.")
+            try:
+                page.wait_for_event("close", timeout=0)
+            except Exception:
+                pass
+        finally:
+            pass  # Leave profile running so next run reconnects to the live session
 
 
 def main():
     parser = argparse.ArgumentParser(description="Post content to a Facebook Page.")
-    parser.add_argument("file",    help="Path to the .xlsx workbook")
-    parser.add_argument("--account", required=True, help="Account name (e.g. NOS_PAN_001)")
-    parser.add_argument("--posts",   required=True, help="Path to posts.txt")
-    parser.add_argument("--sheet",   default="New VProfiles for BFL", help="Sheet name")
+    parser.add_argument("--account",   required=True,          help="Account name (e.g. NOS_PAN_001)")
+    parser.add_argument("--posts",     required=True,          help="Path to posts.txt")
+    parser.add_argument("--min-delay", type=int, default=DEFAULT_MIN_DELAY, help="Min seconds between posts (default: 45)")
+    parser.add_argument("--max-delay", type=int, default=DEFAULT_MAX_DELAY, help="Max seconds between posts (default: 90)")
     args = parser.parse_args()
 
-    run(args.file, args.account, args.sheet, args.posts)
+    run(args.account, args.posts, args.min_delay, args.max_delay)
 
 
 if __name__ == "__main__":
