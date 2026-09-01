@@ -164,24 +164,30 @@ def submit_post(page):
     all_selectors = [
         "div[role='dialog'] div[aria-label='Next'][role='button']",
         "div[role='dialog'] div[aria-label='Post'][role='button']",
+        "div[role='dialog'] div[aria-label='Publish'][role='button']",
         "div[role='dialog'] div[role='button']:has-text('Next')",
         "div[role='dialog'] div[role='button']:has-text('Post')",
+        "div[role='dialog'] div[role='button']:has-text('Publish')",
+        "div[role='dialog'] div[role='button']:has-text('Share')",
         "div[role='dialog'] [data-testid='react-composer-post-button']",
     ]
 
     if not _click_first_visible(all_selectors):
         return False
 
-    # Handle the Next → Post two-step flow: after clicking Next,
-    # Facebook loads a second step with the final Post button
+    # Handle the Next → Post two-step flow (common with link previews):
+    # clicking Next loads a second step with the final Post/Publish button.
     human_pause(2.5, 3.5)
-    post_selectors = [
+    final_selectors = [
         "div[role='dialog'] div[aria-label='Post'][role='button']",
+        "div[role='dialog'] div[aria-label='Publish'][role='button']",
         "div[role='dialog'] div[role='button']:has-text('Post')",
+        "div[role='dialog'] div[role='button']:has-text('Publish')",
+        "div[role='dialog'] div[role='button']:has-text('Share')",
         "div[role='dialog'] [data-testid='react-composer-post-button']",
     ]
     try:
-        for selector in post_selectors:
+        for selector in final_selectors:
             el = page.locator(selector).last
             if el.is_visible():
                 print("Clicking final Post button...")
@@ -210,8 +216,15 @@ def attach_image(page, image_path: Path) -> bool:
         except Exception:
             return False
 
-    # Phase 1: wait for the toolbar to load, then try the Photo/video icon
-    human_pause(1.0, 1.5)
+    # Phase 1: wait up to 8s for the Add-to-post toolbar to appear, then click the icon
+    try:
+        page.wait_for_selector(
+            "div[role='dialog'] [aria-label='Photo/video'], div[role='dialog'] [aria-label*='Photo'], [aria-label='Photo/video']",
+            timeout=8000,
+        )
+    except Exception:
+        pass
+    human_pause(0.5, 1.0)
     for selector in [
         "div[role='dialog'] [aria-label='Photo/video']",
         "div[role='dialog'] [aria-label*='Photo']",
@@ -275,8 +288,14 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
         js_navigate(page, page_url)
         human_pause(2.5, 4.0)
     else:
-        # After a previous post the dialog closes and we're still on the page feed
-        human_pause(1.5, 2.5)
+        # After a previous post the dialog closes and we're still on the page feed.
+        # Scroll to top instantly so the "What's on your mind?" button is in view.
+        human_pause(2.0, 3.0)
+        try:
+            page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
+        except Exception:
+            pass
+        human_pause(1.0, 1.5)
 
     print("Opening composer...")
     if not open_composer(page):
@@ -292,6 +311,14 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
         pass
 
     human_type(page, post["text"])
+
+    # Dismiss any hashtag/mention autocomplete before looking for the photo button —
+    # the autocomplete dropdown sits on top of the Add-to-post toolbar and hides it.
+    try:
+        page.keyboard.press("Escape")
+        human_pause(0.4, 0.7)
+    except Exception:
+        pass
 
     if image_path and image_path.exists():
         attach_image(page, image_path)
