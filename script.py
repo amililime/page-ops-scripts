@@ -18,7 +18,7 @@ Supported sheets and their column layouts:
     E = Password         → PASSWORD_PATTERN
     F = 2FA              → 32 uppercase/digit chars
     G = Email            → email address
-    H = Email Pass       → PASSWORD_PATTERN (placeholder — confirm real rule)
+    H = Email Pass       → PASSWORD_PATTERN
     I = Provider         → non-empty
 
   BFL Warming / HUS WarmUp / OPT WarmUp are campaign-tracking sheets
@@ -89,7 +89,7 @@ SHEET_CONFIGS = {
             "password":  (5,  _optional(PASSWORD_PATTERN, "8–16 chars, uppercase + digit"),  "Password"),
             "fa_2":      (6,  _re(FA_PATTERN,        "32 uppercase letters/digits"),      "2FA"),
             "email":          (7,  _re(EMAIL_PATTERN,          "valid email address"),    "Email"),
-            "recovery_email": (8,  _optional(DOMAIN_PATTERN,  "domain or email address"), "Recovery Email"),
+            "email_pass":     (8,  _optional(EMAIL_PATTERN,   "valid email address"),     "Email Pass"),
             "provider":       (9,  None,                                                   "Provider"),
         },
     },
