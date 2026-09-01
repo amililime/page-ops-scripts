@@ -25,8 +25,10 @@ import random
 import re
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
+import requests
 from playwright.sync_api import sync_playwright
 
 from mlx_context import start_profile_for
@@ -41,8 +43,9 @@ CATEGORY_MAP = {
 }
 
 DEFAULT_URL = "https://visioncompassdesk.com"
-POSTS_PATH  = Path(__file__).parent / "posts.txt"
-IMAGES_PATH = Path(__file__).parent / "image_suggestions.txt"
+POSTS_PATH   = Path(__file__).parent / "posts.txt"
+IMAGES_PATH  = Path(__file__).parent / "image_suggestions.txt"
+IMAGES_DIR   = Path(__file__).parent / "images"
 
 # ── Template bank ─────────────────────────────────────────────────────────────
 
@@ -376,6 +379,31 @@ def extract_category(text: str) -> tuple[str, str] | tuple[None, None]:
     return None, None
 
 
+# ── Image generation ─────────────────────────────────────────────────────────
+
+def generate_image(prompt: str, index: int) -> Path | None:
+    IMAGES_DIR.mkdir(exist_ok=True)
+    out = IMAGES_DIR / f"post_{index + 1}.jpg"
+
+    encoded = urllib.parse.quote(prompt)
+    url = (
+        f"https://image.pollinations.ai/prompt/{encoded}"
+        f"?width=1024&height=1024&nologo=true&model=flux"
+    )
+    print(f"  Generating image {index + 1}...", end=" ", flush=True)
+    try:
+        resp = requests.get(url, timeout=60)
+        if resp.ok:
+            out.write_bytes(resp.content)
+            print(f"saved → {out.name}")
+            return out
+        else:
+            print(f"failed ({resp.status_code})")
+    except requests.RequestException as exc:
+        print(f"error: {exc}")
+    return None
+
+
 # ── File writers ──────────────────────────────────────────────────────────────
 
 def write_posts_txt(posts: list[str]) -> None:
@@ -442,10 +470,15 @@ def main():
 
     # ── Generate and save ──────────────────────────────────────────────────
     print(f"\nGenerating 3 posts for: {category}...")
-    posts, images = generate_three_posts(category, args.url)
+    posts, image_prompts = generate_three_posts(category, args.url)
 
     write_posts_txt(posts)
-    write_images_txt(images)
+    write_images_txt(image_prompts)
+
+    print("\nGenerating images...")
+    image_paths = [generate_image(prompt, i) for i, prompt in enumerate(image_prompts)]
+    saved = [p for p in image_paths if p]
+    print(f"{len(saved)}/3 images saved to images/")
 
     print("\nDone. Run next:")
     print(f'  python3 post.py --account "{args.account}" --posts posts.txt')

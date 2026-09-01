@@ -17,10 +17,12 @@ Requirements:
 """
 
 import argparse
+import os
 import random
 import re
 import sys
 import time
+from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
@@ -85,8 +87,6 @@ def human_pause(min_s=0.8, max_s=2.0):
 
 def open_composer(page):
     """Click 'What's on your mind?' in the main feed only, then wait for the dialog."""
-    import os
-    page.evaluate("window.scrollTo(0, 0)")
     human_pause(1.0, 1.5)
 
     for selector in [
@@ -126,34 +126,139 @@ def open_composer(page):
 
 
 def submit_post(page):
-    """Dismiss any autocomplete, then click Next/Post inside the dialog."""
-    page.keyboard.press("Escape")
-    human_pause(0.3, 0.6)
+    """Dismiss autocomplete, click Next or Post, then handle the Next→Post two-step flow."""
+    # Dismiss hashtag/mention autocomplete without closing the dialog
+    try:
+        autocomplete = page.locator("div[role='dialog'] ul[role='listbox'], div[role='dialog'] div[role='listbox']")
+        if autocomplete.count() > 0:
+            header = page.locator("div[role='dialog'] h2").first
+            if header.is_visible():
+                header.click()
+            else:
+                page.locator("div[role='dialog']").first.click(position={"x": 10, "y": 10})
+            human_pause(0.3, 0.6)
+    except Exception:
+        pass
 
-    for name in [r"^Next$", r"^Post$"]:
-        try:
-            btn = page.locator("div[role='dialog']").get_by_role(
-                "button", name=re.compile(name, re.I)
-            ).last
-            if btn.is_visible():
-                btn.click()
-                return True
-        except Exception:
-            continue
+    def _click_first_visible(selectors):
+        for selector in selectors:
+            try:
+                el = page.locator(selector).last
+                if el.is_visible():
+                    el.click()
+                    return True
+            except Exception:
+                continue
+        for name in [r"^Next$", r"^Post$"]:
+            try:
+                btn = page.locator("div[role='dialog']").get_by_role(
+                    "button", name=re.compile(name, re.I)
+                ).last
+                if btn.is_visible():
+                    btn.click()
+                    return True
+            except Exception:
+                continue
+        return False
 
-    for selector in [
+    all_selectors = [
         "div[role='dialog'] div[aria-label='Next'][role='button']",
         "div[role='dialog'] div[aria-label='Post'][role='button']",
+        "div[role='dialog'] div[role='button']:has-text('Next')",
+        "div[role='dialog'] div[role='button']:has-text('Post')",
         "div[role='dialog'] [data-testid='react-composer-post-button']",
-    ]:
-        try:
+    ]
+
+    if not _click_first_visible(all_selectors):
+        return False
+
+    # Handle the Next → Post two-step flow: after clicking Next,
+    # Facebook loads a second step with the final Post button
+    human_pause(2.5, 3.5)
+    post_selectors = [
+        "div[role='dialog'] div[aria-label='Post'][role='button']",
+        "div[role='dialog'] div[role='button']:has-text('Post')",
+        "div[role='dialog'] [data-testid='react-composer-post-button']",
+    ]
+    try:
+        for selector in post_selectors:
             el = page.locator(selector).last
             if el.is_visible():
+                print("Clicking final Post button...")
                 el.click()
+                break
+    except Exception:
+        pass
+
+    return True
+
+
+IMAGES_DIR = Path(__file__).parent / "images"
+
+
+def attach_image(page, image_path: Path) -> bool:
+    """Click the photo button in the composer and attach the image file."""
+
+    def _via_chooser(locator) -> bool:
+        try:
+            with page.expect_file_chooser(timeout=5000) as fc_info:
+                locator.click()
+            fc_info.value.set_files(str(image_path))
+            print(f"Image attached: {image_path.name}")
+            human_pause(3.0, 5.0)
+            return True
+        except Exception:
+            return False
+
+    # Phase 1: wait for the toolbar to load, then try the Photo/video icon
+    human_pause(1.0, 1.5)
+    for selector in [
+        "div[role='dialog'] [aria-label='Photo/video']",
+        "div[role='dialog'] [aria-label*='Photo']",
+        "[aria-label='Photo/video']",
+    ]:
+        try:
+            btn = page.locator(selector).first
+            if not btn.is_visible():
+                continue
+            if _via_chooser(btn):
                 return True
+            # Clicking opened the "Add to your post" panel — proceed to Phase 2
+            human_pause(0.5, 1.0)
+            break
         except Exception:
             continue
 
+    # Phase 2: "Add to your post" panel is open — click Photo/video inside it
+    for selector in [
+        "span:has-text('Photo/video')",
+        "div[role='menuitem']:has-text('Photo/video')",
+        "li:has-text('Photo/video')",
+        "div:has-text('Photo/video')",
+    ]:
+        try:
+            el = page.locator(selector).first
+            if el.is_visible():
+                if _via_chooser(el):
+                    return True
+        except Exception:
+            continue
+
+    # Phase 3: direct file input fallback
+    for selector in [
+        "div[role='dialog'] input[type='file']",
+        "input[type='file']",
+    ]:
+        try:
+            file_input = page.locator(selector).first
+            file_input.set_input_files(str(image_path))
+            print(f"Image attached: {image_path.name}")
+            human_pause(3.0, 5.0)
+            return True
+        except Exception:
+            continue
+
+    print("Could not attach image — photo button not found.")
     return False
 
 
@@ -163,12 +268,15 @@ def js_navigate(page, url):
     page.wait_for_load_state("domcontentloaded")
 
 
-def publish_post(page, post, index, page_url="https://www.facebook.com/"):
-    print(f"\n── Post {index + 1} {'(with link)' if post['url'] else ''} ──")
+def publish_post(page, post, index, page_url="https://www.facebook.com/", image_path=None, navigate=True):
+    print(f"\n── Post {index + 1} {'(with link)' if post['url'] else ''} {'📷' if image_path else ''} ──")
 
-    if page.url.rstrip("/") != page_url.rstrip("/"):
+    if navigate:
         js_navigate(page, page_url)
         human_pause(2.5, 4.0)
+    else:
+        # After a previous post the dialog closes and we're still on the page feed
+        human_pause(1.5, 2.5)
 
     print("Opening composer...")
     if not open_composer(page):
@@ -185,11 +293,17 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/"):
 
     human_type(page, post["text"])
 
+    if image_path and image_path.exists():
+        attach_image(page, image_path)
+
     if post["url"]:
         human_pause(0.5, 1.2)
         print(f"Adding URL: {post['url']}")
+        page.keyboard.press("Escape")  # dismiss any hashtag autocomplete
+        human_pause(0.2, 0.4)
         page.keyboard.press("End")
         page.keyboard.press("Enter")
+        page.keyboard.press("Enter")  # blank line between hashtags and URL
         human_type(page, post["url"])
         print("Waiting for link preview to load...")
         human_pause(5.0, 7.0)
@@ -286,7 +400,12 @@ def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT
             print("Session active. Starting to post...\n")
 
             for i, post in enumerate(posts):
-                success = publish_post(page, post, i, active_page_url)
+                image_path = IMAGES_DIR / f"post_{i + 1}.jpg"
+                success = publish_post(
+                    page, post, i, active_page_url,
+                    image_path if image_path.exists() else None,
+                    navigate=(i == 0),
+                )
                 if success and i < len(posts) - 1:
                     delay = random.randint(min_delay, max_delay)
                     print(f"Waiting {delay}s before next post...")

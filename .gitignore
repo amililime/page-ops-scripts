@@ -11,6 +11,10 @@ browser_profiles/
 *.xlsx
 !BFL_Info_dummy.xlsx
 
+# Generated post images (recreated by generate_posts.py each run)
+images/
+image_suggestions.txt
+
 # Python cache
 __pycache__/
 *.pyc

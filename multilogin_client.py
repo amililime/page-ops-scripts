@@ -34,8 +34,11 @@ Notes:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 import requests
 
@@ -43,6 +46,27 @@ log = logging.getLogger(__name__)
 
 AUTH_BASE = "https://api.multilogin.com"
 LAUNCHER_BASE = "https://launcher.mlx.yt:45001"
+
+_PORT_CACHE = Path(tempfile.gettempdir()) / "mlx_running_ports.json"
+
+
+def _load_port_cache() -> dict:
+    try:
+        return json.loads(_PORT_CACHE.read_text())
+    except Exception:
+        return {}
+
+
+def _save_port_cache(profile_id: str, port: int) -> None:
+    cache = _load_port_cache()
+    cache[profile_id] = port
+    _PORT_CACHE.write_text(json.dumps(cache))
+
+
+def _clear_port_cache(profile_id: str) -> None:
+    cache = _load_port_cache()
+    cache.pop(profile_id, None)
+    _PORT_CACHE.write_text(json.dumps(cache))
 
 
 class MultiloginError(RuntimeError):
@@ -125,13 +149,21 @@ class MultiloginClient:
             raise MultiloginError(f"Unexpected start-profile response shape: {resp.text}") from exc
 
         log.info("Started Multilogin profile %s on port %s", profile_id, port)
+        _save_port_cache(profile_id, port)
         return StartedProfile(profile_id=profile_id, port=port)
 
     def _get_running_profile(self, profile_id: str, folder_id: str, headless: bool) -> StartedProfile:
-        """Stop the already-running profile and start it fresh to get a clean port."""
-        log.info("Profile %s already running — stopping and restarting...", profile_id)
+        """Reconnect to an already-running profile using the cached port, or restart it."""
+        import time
+
+        cached_port = _load_port_cache().get(profile_id)
+        if cached_port:
+            log.info("Profile %s already running — reconnecting on cached port %s", profile_id, cached_port)
+            return StartedProfile(profile_id=profile_id, port=cached_port)
+
+        log.info("Profile %s already running — no cached port, stopping and restarting...", profile_id)
         self.stop_profile(profile_id)
-        import time; time.sleep(2)
+        time.sleep(2)
 
         url = (
             f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}/p/{profile_id}/start"
@@ -152,6 +184,7 @@ class MultiloginClient:
             raise MultiloginError(f"Unexpected restart response shape: {resp.text}") from exc
 
         log.info("Restarted profile %s on port %s", profile_id, port)
+        _save_port_cache(profile_id, port)
         return StartedProfile(profile_id=profile_id, port=port)
 
     def stop_profile(self, profile_id: str) -> None:
@@ -168,5 +201,6 @@ class MultiloginClient:
                 log.warning("stop_profile(%s) returned %s: %s", profile_id, resp.status_code, resp.text)
             else:
                 log.info("Stopped Multilogin profile %s", profile_id)
+                _clear_port_cache(profile_id)
         except requests.RequestException as exc:
             log.warning("stop_profile(%s) request failed: %s", profile_id, exc)
