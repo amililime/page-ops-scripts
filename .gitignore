@@ -15,6 +15,9 @@ browser_profiles/
 images/
 image_suggestions.txt
 
+# Credentials
+.env
+
 # Generated output
 *.pdf
 posts.txt
