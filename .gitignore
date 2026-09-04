@@ -15,6 +15,10 @@ browser_profiles/
 images/
 image_suggestions.txt
 
+# Generated output
+*.pdf
+posts.txt
+
 # One-off generation scripts
 make_demo_brief.py
 make_arch_pdf.py
