@@ -65,32 +65,28 @@ def ensure_credentials():
 # ── Account picker ────────────────────────────────────────────────────────────
 
 def pick_account() -> str:
-    from multilogin_client import MultiloginClient
-    from mlx_profiles import discover_profiles
-    from mlx_context import FOLDER_NAME, FOLDER_ID
+    from mlx_context import list_accounts
 
-    print("\nConnecting to Multilogin to load accounts...")
-    client = MultiloginClient(
-        email=os.environ["MLX_EMAIL"],
-        password=os.environ["MLX_PASSWORD"],
-    )
-    client.sign_in()
-    profile_map = discover_profiles(client, FOLDER_ID)
-    accounts = sorted(profile_map.keys())
+    accounts = list_accounts()
 
-    if not accounts:
-        print(f"\nError: no profiles found in folder '{FOLDER_NAME}'.")
-        sys.exit(1)
-
-    print(f"\n── Accounts ({FOLDER_NAME}) ──────────────────────────────")
+    print("\n── Accounts ──────────────────────────────────────────────")
     for i, name in enumerate(accounts, 1):
         print(f"  {i}. {name}")
+    print(f"  S. Sync profiles from Multilogin")
 
     while True:
-        choice = input(f"\n  Pick an account [1-{len(accounts)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(accounts):
+        choice = input(f"\n  Pick an account [1-{len(accounts)}] or S to sync: ").strip().lower()
+        if choice == "s":
+            run_cmd(["sync_profiles.py"])
+            accounts = list_accounts()
+            print("\n── Accounts ──────────────────────────────────────────────")
+            for i, name in enumerate(accounts, 1):
+                print(f"  {i}. {name}")
+            print(f"  S. Sync profiles from Multilogin")
+        elif choice.isdigit() and 1 <= int(choice) <= len(accounts):
             return accounts[int(choice) - 1]
-        print("  Please enter a number from the list.")
+        else:
+            print("  Please enter a number from the list, or S to sync.")
 
 
 # ── Mode picker ───────────────────────────────────────────────────────────────

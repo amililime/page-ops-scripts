@@ -187,33 +187,6 @@ class MultiloginClient:
         _save_port_cache(profile_id, port)
         return StartedProfile(profile_id=profile_id, port=port)
 
-    def list_profiles_in_folder(self, folder_id: str) -> list[dict]:
-        """Return all profiles in a folder."""
-        if not self._token:
-            raise MultiloginError("Call sign_in() before list_profiles_in_folder()")
-
-        candidates = [
-            (f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}", {"Authorization": f"Bearer {self._token}"}),
-            (f"{LAUNCHER_BASE}/api/v1/profile/f/{folder_id}", {"Authorization": f"Bearer {self._token}"}),
-            (f"{LAUNCHER_BASE}/api/v2/profile",               {"Authorization": f"Bearer {self._token}"}),
-            (f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}", {}),
-            (f"{LAUNCHER_BASE}/api/v1/profile",               {"Authorization": f"Bearer {self._token}"}),
-        ]
-
-        for url, headers in candidates:
-            try:
-                resp = requests.get(url, headers=headers, timeout=10)
-                print(f"  [probe] {url} -> {resp.status_code}: {resp.text[:120]}")
-                if resp.ok:
-                    data = resp.json().get("data", [])
-                    profiles = data if isinstance(data, list) else data.get("profiles", [])
-                    if profiles:
-                        return profiles
-            except Exception as exc:
-                print(f"  [probe] {url} -> error: {exc}")
-
-        raise MultiloginError("Could not list profiles — no working endpoint found (see probe output above)")
-
     def stop_profile(self, profile_id: str) -> None:
         """Stop a running profile. Logs a warning rather than raising so it's safe in a finally block."""
         if not self._token:
