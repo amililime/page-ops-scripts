@@ -192,7 +192,8 @@ class MultiloginClient:
         if not self._token:
             raise MultiloginError("Call sign_in() before list_profiles_in_folder()")
         resp = requests.get(
-            f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}",
+            f"{AUTH_BASE}/profile",
+            params={"folder_id": folder_id, "count": 200, "page": 0},
             headers={"Authorization": f"Bearer {self._token}"},
             timeout=15,
         )
