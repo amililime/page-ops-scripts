@@ -80,22 +80,21 @@ def main():
 
     print("\nListing profiles in BUFFALO FB folder...")
     raw = run(xcli, "profile-list", "-f", FOLDER_ID)
-    print(f"\nRaw output:\n{raw}\n")
-
-    # Try to parse as JSON first, fall back to showing raw output for manual inspection
+    # Parse the text table: rows between the first and second separator lines
     profiles: dict[str, str] = {}
-    try:
-        data = json.loads(raw)
-        items = data if isinstance(data, list) else data.get("data", data.get("profiles", []))
-        for item in items:
-            name = item.get("name") or item.get("profile_name")
-            pid = item.get("profile_id") or item.get("id") or item.get("uuid")
-            if name and pid:
-                profiles[name] = pid
-    except json.JSONDecodeError:
-        print("Output is not JSON — check the raw output above to determine the format.")
-        print("Send the output to support so the parser can be adjusted.")
-        sys.exit(1)
+    in_table = False
+    for line in raw.splitlines():
+        if line.startswith("---"):
+            if not in_table:
+                in_table = True
+            else:
+                break
+            continue
+        if not in_table:
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and len(parts[0]) == 36 and parts[0].count("-") == 4:
+            profiles[parts[1]] = parts[0]
 
     if not profiles:
         print("No profiles found or could not parse output.")
