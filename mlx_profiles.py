@@ -57,26 +57,12 @@ def load_profile_map(path: str | Path) -> dict[str, dict[str, str]]:
     return data
 
 
-def discover_profiles(client, folder_name: str) -> dict[str, dict[str, str]]:
+def discover_profiles(client, folder_id: str) -> dict[str, dict[str, str]]:
     """
     Sign-in must already be done. Returns a profile_map identical in shape to
     load_profile_map(), built live from the Multilogin API.
     """
-    folders = client.list_folders()
-
-    target = next(
-        (f for f in folders if f.get("name") == folder_name),
-        None,
-    )
-    if target is None:
-        available = [f.get("name") for f in folders]
-        raise ProfileMapError(
-            f"Folder '{folder_name}' not found in Multilogin. Available: {available}"
-        )
-
-    folder_id = target.get("folder_id") or target.get("id")
     profiles = client.list_profiles_in_folder(folder_id)
-
     return {
         p["name"]: {"folder_id": folder_id, "profile_id": p["profile_id"]}
         for p in profiles

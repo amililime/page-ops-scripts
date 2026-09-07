@@ -67,7 +67,7 @@ def ensure_credentials():
 def pick_account() -> str:
     from multilogin_client import MultiloginClient
     from mlx_profiles import discover_profiles
-    from mlx_context import FOLDER_NAME
+    from mlx_context import FOLDER_NAME, FOLDER_ID
 
     print("\nConnecting to Multilogin to load accounts...")
     client = MultiloginClient(
@@ -75,7 +75,7 @@ def pick_account() -> str:
         password=os.environ["MLX_PASSWORD"],
     )
     client.sign_in()
-    profile_map = discover_profiles(client, FOLDER_NAME)
+    profile_map = discover_profiles(client, FOLDER_ID)
     accounts = sorted(profile_map.keys())
 
     if not accounts:

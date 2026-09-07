@@ -187,36 +187,20 @@ class MultiloginClient:
         _save_port_cache(profile_id, port)
         return StartedProfile(profile_id=profile_id, port=port)
 
-    def list_folders(self) -> list[dict]:
-        """Return all folders in the workspace."""
-        if not self._token:
-            raise MultiloginError("Call sign_in() before list_folders()")
-        resp = requests.get(
-            f"{AUTH_BASE}/folder",
-            headers={"Authorization": f"Bearer {self._token}"},
-            timeout=15,
-        )
-        if not resp.ok:
-            raise MultiloginError(f"list_folders failed ({resp.status_code}): {resp.text}")
-        try:
-            return resp.json()["data"]
-        except (KeyError, ValueError) as exc:
-            raise MultiloginError(f"Unexpected list_folders response: {resp.text}") from exc
-
-    def list_profiles_in_folder(self, folder_id: str, count: int = 200) -> list[dict]:
+    def list_profiles_in_folder(self, folder_id: str) -> list[dict]:
         """Return all profiles in a folder."""
         if not self._token:
             raise MultiloginError("Call sign_in() before list_profiles_in_folder()")
         resp = requests.get(
-            f"{AUTH_BASE}/profile",
-            params={"search": "", "folder_id": folder_id, "count": count, "page": 0},
+            f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}",
             headers={"Authorization": f"Bearer {self._token}"},
             timeout=15,
         )
         if not resp.ok:
             raise MultiloginError(f"list_profiles_in_folder failed ({resp.status_code}): {resp.text}")
         try:
-            return resp.json()["data"]["profiles"]
+            data = resp.json()["data"]
+            return data if isinstance(data, list) else data.get("profiles", [])
         except (KeyError, ValueError) as exc:
             raise MultiloginError(f"Unexpected list_profiles response: {resp.text}") from exc
 

@@ -16,6 +16,7 @@ from multilogin_client import MultiloginClient
 from mlx_profiles import discover_profiles
 
 FOLDER_NAME = "BUFFALO FB"
+FOLDER_ID = "5bfc9a9a-4d09-4988-ad84-2e2b0cf107c6"
 
 
 def _client() -> MultiloginClient:
@@ -36,7 +37,7 @@ def start_profile_for(account_name: str):
     Caller must call client.stop_profile(started.profile_id) when done.
     """
     client = _client()
-    profile_map = discover_profiles(client, FOLDER_NAME)
+    profile_map = discover_profiles(client, FOLDER_ID)
 
     if account_name not in profile_map:
         available = sorted(profile_map.keys())
