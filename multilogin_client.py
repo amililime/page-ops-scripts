@@ -191,19 +191,28 @@ class MultiloginClient:
         """Return all profiles in a folder."""
         if not self._token:
             raise MultiloginError("Call sign_in() before list_profiles_in_folder()")
-        resp = requests.get(
-            f"{AUTH_BASE}/profile",
-            params={"folder_id": folder_id, "count": 200, "page": 0},
-            headers={"Authorization": f"Bearer {self._token}"},
-            timeout=15,
-        )
-        if not resp.ok:
-            raise MultiloginError(f"list_profiles_in_folder failed ({resp.status_code}): {resp.text}")
-        try:
-            data = resp.json()["data"]
-            return data if isinstance(data, list) else data.get("profiles", [])
-        except (KeyError, ValueError) as exc:
-            raise MultiloginError(f"Unexpected list_profiles response: {resp.text}") from exc
+
+        candidates = [
+            (f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}", {"Authorization": f"Bearer {self._token}"}),
+            (f"{LAUNCHER_BASE}/api/v1/profile/f/{folder_id}", {"Authorization": f"Bearer {self._token}"}),
+            (f"{LAUNCHER_BASE}/api/v2/profile",               {"Authorization": f"Bearer {self._token}"}),
+            (f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}", {}),
+            (f"{LAUNCHER_BASE}/api/v1/profile",               {"Authorization": f"Bearer {self._token}"}),
+        ]
+
+        for url, headers in candidates:
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                print(f"  [probe] {url} -> {resp.status_code}: {resp.text[:120]}")
+                if resp.ok:
+                    data = resp.json().get("data", [])
+                    profiles = data if isinstance(data, list) else data.get("profiles", [])
+                    if profiles:
+                        return profiles
+            except Exception as exc:
+                print(f"  [probe] {url} -> error: {exc}")
+
+        raise MultiloginError("Could not list profiles — no working endpoint found (see probe output above)")
 
     def stop_profile(self, profile_id: str) -> None:
         """Stop a running profile. Logs a warning rather than raising so it's safe in a finally block."""
