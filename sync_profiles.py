@@ -79,7 +79,7 @@ def main():
     print("[OK] Logged in.")
 
     print("\nListing profiles in BUFFALO FB folder...")
-    raw = run(xcli, "profile-list", "-f", FOLDER_ID)
+    raw = run(xcli, "profile-list", "-f", FOLDER_ID, "-l", "1000")
     # Parse the text table: rows between the first and second separator lines
     profiles: dict[str, str] = {}
     in_table = False
