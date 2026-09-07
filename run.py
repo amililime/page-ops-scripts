@@ -203,4 +203,6 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         print("\n\nCancelled.")
+    except Exception as exc:
+        print(f"\n\nError: {exc}")
     input("\nPress Enter to close...")
