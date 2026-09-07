@@ -13,9 +13,9 @@ import sys
 from pathlib import Path
 
 from multilogin_client import MultiloginClient
-from mlx_profiles import load_profile_map, validate_against
+from mlx_profiles import discover_profiles
 
-MLX_PROFILES_PATH = Path(__file__).parent / "mlx_profiles.json"
+FOLDER_NAME = "BUFFALO FB"
 
 
 def _client() -> MultiloginClient:
@@ -31,18 +31,19 @@ def _client() -> MultiloginClient:
 
 def start_profile_for(account_name: str):
     """
-    Validate account against mlx_profiles.json, sign in, start the profile.
+    Discover profiles from Multilogin, sign in, start the named profile.
     Returns (MultiloginClient, StartedProfile).
     Caller must call client.stop_profile(started.profile_id) when done.
     """
-    profile_map = load_profile_map(MLX_PROFILES_PATH)
-    errors = validate_against([account_name], profile_map)
-    if errors:
-        for e in errors:
-            print(f"MLX MAPPING ERROR: {e}")
+    client = _client()
+    profile_map = discover_profiles(client, FOLDER_NAME)
+
+    if account_name not in profile_map:
+        available = sorted(profile_map.keys())
+        print(f"Error: account '{account_name}' not found in folder '{FOLDER_NAME}'.")
+        print(f"Available: {available}")
         sys.exit(1)
 
     entry = profile_map[account_name]
-    client = _client()
     started = client.start_profile(entry["folder_id"], entry["profile_id"])
     return client, started

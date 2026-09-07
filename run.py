@@ -5,14 +5,12 @@ No coding required — just answer the prompts.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).parent
-PROFILES_FILE = ROOT / "mlx_profiles.json"
 ENV_FILE = ROOT / ".env"
 POSTS_FILE = ROOT / "posts.txt"
 
@@ -67,14 +65,24 @@ def ensure_credentials():
 # ── Account picker ────────────────────────────────────────────────────────────
 
 def pick_account() -> str:
-    if not PROFILES_FILE.exists():
-        print(f"\nError: {PROFILES_FILE} not found.")
+    from multilogin_client import MultiloginClient
+    from mlx_profiles import discover_profiles
+    from mlx_context import FOLDER_NAME
+
+    print("\nConnecting to Multilogin to load accounts...")
+    client = MultiloginClient(
+        email=os.environ["MLX_EMAIL"],
+        password=os.environ["MLX_PASSWORD"],
+    )
+    client.sign_in()
+    profile_map = discover_profiles(client, FOLDER_NAME)
+    accounts = sorted(profile_map.keys())
+
+    if not accounts:
+        print(f"\nError: no profiles found in folder '{FOLDER_NAME}'.")
         sys.exit(1)
 
-    profiles = json.loads(PROFILES_FILE.read_text())
-    accounts = list(profiles.keys())
-
-    print("\n── Accounts ──────────────────────────────────────────────")
+    print(f"\n── Accounts ({FOLDER_NAME}) ──────────────────────────────")
     for i, name in enumerate(accounts, 1):
         print(f"  {i}. {name}")
 
