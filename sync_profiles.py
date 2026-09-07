@@ -79,7 +79,7 @@ def main():
     print("[OK] Logged in.")
 
     print("\nListing profiles in BUFFALO FB folder...")
-    raw = run(xcli, "profile-list", "-f", "BUFFALO FB", "--limit", "500")
+    raw = run(xcli, "profile-list", "-f", FOLDER_ID)
     print(f"\nRaw output:\n{raw}\n")
 
     # Try to parse as JSON first, fall back to showing raw output for manual inspection
