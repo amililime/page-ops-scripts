@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import getpass
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -188,26 +189,38 @@ async def boost(cdp_url: str):
         # ── Create campaign ───────────────────────────────────────
         print("Creating campaign...")
         await page.wait_for_timeout(2000)
+
+        # Target the green "+ Create" button precisely — avoid "Create a view" etc.
         clicked = False
         for selector in [
-            'button:has-text("Create")',
-            'div[role="button"]:has-text("Create")',
-            '[aria-label="Create"]',
-            'button:has-text("Create ad")',
-            'a:has-text("Create")',
+            '[data-testid="create-entity-button"]',
+            'a[href*="create"]:has-text("Create"):not(:has-text("view"))',
+            'div[aria-label="Create campaign"]',
         ]:
             try:
-                await page.click(selector, timeout=5000)
+                await page.click(selector, timeout=4000)
                 clicked = True
                 break
             except Exception:
                 continue
+
         if not clicked:
-            raise RuntimeError("Could not find the Create button in Ads Manager.")
+            # Last resort: find the link/button whose full text is exactly "Create" or "+ Create"
+            try:
+                btn = page.locator('a, button, div[role="button"]').filter(
+                    has_text=re.compile(r'^\+?\s*Create$', re.I)
+                ).first
+                await btn.click(timeout=8000)
+                clicked = True
+            except Exception:
+                pass
+
+        if not clicked:
+            raise RuntimeError("Could not find the + Create campaign button in Ads Manager.")
         await page.wait_for_timeout(1500)
 
-        await page.click("text=Manual campaign")
-        await page.wait_for_timeout(800)
+        # Current Ads Manager UI: modal shows objective radio buttons directly.
+        # No "Manual campaign" step — just select Engagement and Continue.
         await page.click("text=Engagement")
         await page.wait_for_timeout(800)
         await page.click('button:has-text("Continue")')
