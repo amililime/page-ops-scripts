@@ -187,11 +187,23 @@ async def boost(cdp_url: str):
 
         # ── Create campaign ───────────────────────────────────────
         print("Creating campaign...")
-        create_btn = await page.wait_for_selector(
-            'div[aria-label="Create"], button:has-text("Create")',
-            timeout=30000,
-        )
-        await create_btn.click()
+        await page.wait_for_timeout(2000)
+        clicked = False
+        for selector in [
+            'button:has-text("Create")',
+            'div[role="button"]:has-text("Create")',
+            '[aria-label="Create"]',
+            'button:has-text("Create ad")',
+            'a:has-text("Create")',
+        ]:
+            try:
+                await page.click(selector, timeout=5000)
+                clicked = True
+                break
+            except Exception:
+                continue
+        if not clicked:
+            raise RuntimeError("Could not find the Create button in Ads Manager.")
         await page.wait_for_timeout(1500)
 
         await page.click("text=Manual campaign")
