@@ -376,6 +376,17 @@ async def boost(cdp_url: str, publish: bool = False):
         await edit_btn.click(timeout=8000)
         await page.wait_for_timeout(1000)
 
+        # Remove all existing location chips before adding Paraguay
+        for _ in range(10):
+            try:
+                btn = await page.query_selector('div[aria-label^="Remove "]')
+                if btn is None:
+                    break
+                await btn.click()
+                await page.wait_for_timeout(400)
+            except Exception:
+                break
+
         # Find the country search input (label varies by account)
         search = None
         for sel in [
