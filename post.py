@@ -278,7 +278,10 @@ def attach_image(page, image_path: Path) -> bool:
 def js_navigate(page, url):
     """Navigate using window.location so Multilogin's proxy handles auth correctly."""
     page.evaluate(f"window.location.href = '{url}'")
-    page.wait_for_load_state("domcontentloaded")
+    try:
+        page.wait_for_load_state("domcontentloaded", timeout=60000)
+    except Exception:
+        pass
 
 
 def publish_post(page, post, index, page_url="https://www.facebook.com/", image_path=None, navigate=True):
@@ -326,9 +329,13 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
     if post["url"]:
         human_pause(0.5, 1.2)
         print(f"Adding URL: {post['url']}")
-        page.keyboard.press("Escape")  # dismiss any hashtag autocomplete
-        human_pause(0.2, 0.4)
-        page.keyboard.press("End")
+        try:
+            textbox = page.locator("div[role='dialog'] div[role='textbox'][contenteditable='true']").first
+            textbox.click()
+            human_pause(0.5, 0.8)
+        except Exception:
+            pass
+        page.keyboard.press("Control+End")  # move cursor to absolute end of content
         page.keyboard.press("Enter")
         page.keyboard.press("Enter")  # blank line between hashtags and URL
         human_type(page, post["url"])
@@ -389,42 +396,49 @@ def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT
             if already_on_page:
                 print("Already in page context.")
             else:
-                # Try sidebar link by category suffix
                 switched = False
+
+                # Step 1: scroll the left sidebar with mouse wheel at x=140 (sidebar column)
+                # until the fanpage link appears under Shortcuts, then click it.
+                # Step 2: clicking the link opens the fanpage — "Switch Now" on that
+                # screen actually enters the page posting context.
                 try:
-                    all_links = page.locator("a").all()
-                    for link in all_links:
-                        text = (link.text_content() or "").strip()
-                        if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
-                            print(f"Found page in sidebar: '{text}' — clicking...")
-                            link.click()
-                            page.wait_for_load_state("domcontentloaded")
-                            human_pause(2.0, 3.0)
-                            switched = True
+                    for _ in range(25):
+                        for link in page.locator("a").all():
+                            text = (link.text_content() or "").strip()
+                            if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
+                                print(f"Found page in sidebar: '{text}' — clicking...")
+                                link.click()
+                                human_pause(2.0, 3.0)
+                                for sw in [
+                                    page.get_by_role("button", name=re.compile(r"switch now", re.I)),
+                                    page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
+                                    page.locator("div[role='button']:has-text('Switch Now'), a:has-text('Switch Now')"),
+                                ]:
+                                    try:
+                                        if sw.count() > 0:
+                                            print("Clicking Switch Now...")
+                                            sw.first.click()
+                                            try:
+                                                page.wait_for_load_state("domcontentloaded", timeout=60000)
+                                            except Exception:
+                                                pass
+                                            human_pause(2.0, 3.0)
+                                            break
+                                    except Exception:
+                                        pass
+                                switched = True
+                                break
+                        if switched:
                             break
+                        page.mouse.move(140, 400)
+                        page.mouse.wheel(0, 300)
+                        human_pause(0.4, 0.6)
                 except Exception:
                     pass
 
-                # Fallback: Switch Now button
                 if not switched:
-                    try:
-                        for locator in [
-                            page.get_by_role("button", name=re.compile(r"switch now", re.I)),
-                            page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
-                            page.locator("a:has-text('Switch Now'), div[role='button']:has-text('Switch Now')"),
-                        ]:
-                            if locator.count() > 0:
-                                print("Clicking Switch Now...")
-                                locator.first.click()
-                                page.wait_for_load_state("domcontentloaded")
-                                human_pause(2.0, 3.0)
-                                switched = True
-                                break
-                    except Exception:
-                        pass
-
-                if not switched:
-                    print("Could not find page in sidebar or Switch Now — continuing with current URL.")
+                    print("Could not find page in sidebar — continuing with current URL.")
 
             active_page_url = page.url
             print(f"Active page URL: {active_page_url}")

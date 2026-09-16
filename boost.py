@@ -12,9 +12,11 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 ROOT = Path(__file__).parent
 ENV_FILE = ROOT / ".env"
+POSTS_FILE = ROOT / "posts.txt"
 
 
 # ── Credentials ───────────────────────────────────────────────────────────────
@@ -79,6 +81,15 @@ def pick_account() -> str:
         if choice.isdigit() and 1 <= int(choice) <= len(accounts):
             return accounts[int(choice) - 1]
         print("  Please enter a number from the list.")
+
+
+def ask_publish_mode() -> bool:
+    print("\n── Publish mode ──────────────────────────────────────────")
+    choice = input(
+        "  Publish now, or save as draft to review first?\n"
+        "  [draft/publish] (default: draft): "
+    ).strip().lower()
+    return choice in ("publish", "p", "yes", "y")
 
 
 # ── TextVerified SMS ──────────────────────────────────────────────────────────
@@ -153,7 +164,10 @@ async def _handle_verification(page) -> bool:
                     break
                 except Exception:
                     continue
-            await page.wait_for_load_state("networkidle")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=30000)
+            except Exception:
+                pass
             tv.verifications.cancel(verification.id)
             return True
         else:
@@ -170,7 +184,7 @@ async def _handle_verification(page) -> bool:
 
 # ── Main ad creation flow ─────────────────────────────────────────────────────
 
-async def boost(cdp_url: str):
+async def boost(cdp_url: str, publish: bool = False):
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
@@ -179,12 +193,22 @@ async def boost(cdp_url: str):
         page = context.pages[0] if context.pages else await context.new_page()
 
         # ── Navigate to Ads Manager ───────────────────────────────
+        # Use window.location — page.goto() bypasses Multilogin's proxy-auth
+        # injection and fails with ERR_INVALID_AUTH_CREDENTIALS.
         print("Opening Ads Manager...")
-        await page.goto(
+        await page.evaluate(
+            "(u) => { window.location.href = u; }",
             "https://adsmanager.facebook.com/adsmanager/manage/campaigns",
-            wait_until="networkidle",
-            timeout=60000,
         )
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        except Exception:
+            pass
+        try:
+            await page.wait_for_selector("text=Campaigns", timeout=30000)
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
 
         # ── Create campaign ───────────────────────────────────────
         print("Creating campaign...")
@@ -219,49 +243,207 @@ async def boost(cdp_url: str):
             raise RuntimeError("Could not find the + Create campaign button in Ads Manager.")
         await page.wait_for_timeout(1500)
 
-        # Current Ads Manager UI: modal shows objective radio buttons directly.
-        # No "Manual campaign" step — just select Engagement and Continue.
-        await page.click("text=Engagement")
-        await page.wait_for_timeout(800)
-        await page.click('button:has-text("Continue")')
-        await page.wait_for_load_state("networkidle")
-
-        # ── Ad set ────────────────────────────────────────────────
-        print("Configuring ad set...")
-        await page.click("text=On your ad")
-        await page.wait_for_timeout(800)
-        await page.click("text=Post engagement")
-        await page.wait_for_timeout(800)
-
-        # Location targeting
-        print("Setting location: Paraguay...")
+        # Wait for "Loading creation" spinner to fully disappear before interacting.
+        # Use wait_for_function polling the DOM text directly — more reliable than
+        # selector state on slow networks where the overlay can persist well past 20s.
+        print("  Waiting for creation dialog to load...")
         try:
-            await page.click('div[aria-label="Remove United States"]', timeout=5000)
-            await page.wait_for_timeout(500)
+            await page.wait_for_function(
+                "() => !document.body.innerText.includes('Loading creation')",
+                timeout=90000,
+            )
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+
+        # Screenshot here so we always know what state the page is in after + Create
+        await page.screenshot(path=str(ROOT / "debug_after_create.png"))
+        print("  Screenshot saved: debug_after_create.png")
+
+        # If we landed directly on the campaign editor (Facebook remembers the last objective
+        # and skips the picker), the "Next" button will already be present — skip ahead.
+        already_on_editor = await page.get_by_role("button", name=re.compile(r"^Next$", re.I)).count() > 0
+
+        if not already_on_editor:
+            # Objective picker is showing — click Engagement then Continue
+            engagement_clicked = False
+            for locator in [
+                page.get_by_text("Engagement", exact=True),
+                page.locator('div[role="dialog"] :text("Engagement")'),
+                page.locator(':text("Engagement")').filter(has_not_text="New").filter(has_not_text="Post"),
+            ]:
+                try:
+                    await locator.first.click(timeout=6000)
+                    engagement_clicked = True
+                    break
+                except Exception:
+                    continue
+            if not engagement_clicked:
+                raise RuntimeError("Could not find Engagement objective — check debug_after_create.png")
+            await page.wait_for_timeout(800)
+
+            for locator in [
+                page.locator('div[role="dialog"]').get_by_role("button", name=re.compile(r"^Continue$", re.I)),
+                page.get_by_role("button", name=re.compile(r"^Continue$", re.I)),
+            ]:
+                try:
+                    await locator.click(timeout=6000)
+                    break
+                except Exception:
+                    continue
+            await page.wait_for_timeout(1500)
+
+        # Some accounts show a second "Manual vs Recommended" dialog
+        try:
+            await page.locator('div[role="dialog"] :text("Manual")').first.click(timeout=6000)
+            await page.wait_for_timeout(800)
+            await page.locator('div[role="dialog"]').get_by_role(
+                "button", name=re.compile(r"^Continue$", re.I)
+            ).click(timeout=6000)
+            await page.wait_for_timeout(1200)
         except Exception:
             pass
 
-        loc = await page.wait_for_selector('input[aria-label="Add locations"]', timeout=10000)
-        await loc.fill("Paraguay")
-        await page.wait_for_selector('div[role="option"]:has-text("Paraguay")', timeout=10000)
-        await page.click('div[role="option"]:has-text("Paraguay")')
-        await page.wait_for_timeout(800)
+        # Campaign editor page — click Next to reach the Ad Set section
+        await page.get_by_role("button", name=re.compile(r"^Next$", re.I)).click(timeout=10000)
+        await page.wait_for_timeout(1500)
 
-        await page.click('button:has-text("Next")')
-        await page.wait_for_load_state("networkidle")
+        # ── Ad set ────────────────────────────────────────────────
+        print("Configuring ad set...")
+        # "On your ad" is an option inside the "Message destinations" dropdown
+        await page.click("text=Message destinations", timeout=10000)
+        await page.wait_for_timeout(600)
+        await page.click('text="On your ad"', timeout=8000)
+        await page.wait_for_timeout(1000)
+
+        # Switch engagement type from default "Video views" to "Post engagement"
+        try:
+            await page.click("text=Video views", timeout=8000)
+            await page.wait_for_timeout(600)
+            await page.click("text=Post engagement", timeout=5000)
+            await page.wait_for_timeout(800)
+        except Exception:
+            pass  # already set, or account defaults differently
+
+        # Location targeting — scroll the inner form container (Ads Manager doesn't use window scroll)
+        print("Setting location: Paraguay...")
+
+        async def scroll_form(amount):
+            await page.evaluate("""(amount) => {
+                const candidates = [...document.querySelectorAll('div')]
+                    .filter(el => el.scrollHeight > el.clientHeight + 50
+                                  && getComputedStyle(el).overflowY !== 'visible'
+                                  && getComputedStyle(el).overflowY !== 'hidden'
+                                  && el.clientHeight > 200);
+                const tallest = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+                if (tallest) tallest.scrollTop += amount;
+            }""", amount)
+
+        included = page.locator("text=Included location:").first
+        for _ in range(40):
+            if await included.count() > 0:
+                visible = await included.is_visible()
+                if visible:
+                    break
+            await scroll_form(200)
+            await page.wait_for_timeout(200)
+
+        inc_handle = await included.element_handle()
+        await page.evaluate(
+            "el => el.scrollIntoView({block: 'center', behavior: 'instant'})", inc_handle
+        )
+        await page.wait_for_timeout(1000)
+
+        # Click the Edit link nearest to the Locations heading
+        heading = page.locator("text=* Locations").first
+        heading_box = await heading.bounding_box()
+        anchor_box = heading_box or await included.bounding_box()
+
+        async def nearest_edit():
+            best, best_dy = None, None
+            for c in await page.locator('text="Edit"').all():
+                cbox = await c.bounding_box()
+                if cbox and anchor_box and cbox["y"] >= anchor_box["y"] - 5:
+                    dy = cbox["y"] - anchor_box["y"]
+                    if best_dy is None or dy < best_dy:
+                        best_dy, best = dy, c
+            return best
+
+        edit_btn = await nearest_edit()
+        if edit_btn is None:
+            await page.screenshot(path=str(ROOT / "debug_location.png"))
+            raise RuntimeError("Could not find the Locations Edit link. Screenshot saved to debug_location.png")
+        await edit_btn.click(timeout=8000)
+        await page.wait_for_timeout(1000)
+
+        # Find the country search input (label varies by account)
+        search = None
+        for sel in [
+            'input[placeholder*="ountry" i]',
+            'input[placeholder*="ocation" i]',
+            'input[aria-label*="ocation" i]',
+            'input[aria-label="Add locations"]',
+        ]:
+            try:
+                cand = page.locator(sel).first
+                if await cand.is_visible(timeout=2000):
+                    search = cand
+                    break
+            except Exception:
+                continue
+        if not search:
+            raise RuntimeError("No location search input found after clicking Edit.")
+
+        await search.fill("Paraguay")
+        await page.wait_for_timeout(1000)
+        await search.press("Enter")
+        await page.wait_for_timeout(1000)
+
+        await page.get_by_role("button", name=re.compile(r"^Next$", re.I)).click(timeout=10000)
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        except Exception:
+            pass
 
         # ── Ad level: select existing post ────────────────────────
-        print("Selecting most recent post...")
-        await page.click("text=Use existing post")
+        link_url = None
+        if POSTS_FILE.exists():
+            match = re.search(r"https?://\S+", POSTS_FILE.read_text(encoding="utf-8"))
+            if match:
+                link_url = match.group()
+
+        print(f"Selecting link post ({link_url or 'unknown URL'})...")
+        use_existing = page.locator("text=Use existing post").first
+        await use_existing.wait_for(state="attached", timeout=15000)
+        for _ in range(20):
+            if await use_existing.is_visible():
+                break
+            await scroll_form(200)
+            await page.wait_for_timeout(200)
+        await use_existing.click(timeout=10000)
         await page.wait_for_timeout(1000)
         await page.click("text=Select post")
         await page.wait_for_timeout(2000)
 
-        first_post = await page.wait_for_selector(
-            'div[data-testid="mw-media-grid-item"]:first-child, div[role="gridcell"]:first-child',
-            timeout=15000,
-        )
-        await first_post.click()
+        # The post picker is a table sorted newest first.
+        # Rows with numeric post IDs (15+ digits) are the selectable items.
+        # If we have the link URL, prefer the row whose text contains the domain.
+        await page.wait_for_timeout(2000)
+
+        rows = page.locator("text=/^\\d{15,}$/")
+        await rows.first.wait_for(state="visible", timeout=15000)
+
+        chosen = None
+        if link_url:
+            domain = urlparse(link_url).netloc
+            domain_rows = rows.filter(has_text=domain)
+            if await domain_rows.count() > 0:
+                chosen = domain_rows.first
+
+        if chosen is None:
+            chosen = rows.first
+
+        await chosen.click(timeout=10000)
         await page.wait_for_timeout(1000)
 
         for label in ["Continue", "Select"]:
@@ -270,11 +452,31 @@ async def boost(cdp_url: str):
                 break
             except Exception:
                 continue
-        await page.wait_for_load_state("networkidle")
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=30000)
+        except Exception:
+            pass
 
-        # ── Publish ───────────────────────────────────────────────
+        # ── Publish or draft ──────────────────────────────────────
+        if not publish:
+            print("\nCampaign saved as draft. Review and publish it manually in Ads Manager → Drafts.")
+            return
+
         print("Publishing campaign...")
-        await page.click('button:has-text("Publish")')
+        publish_clicked = False
+        for locator in [
+            page.get_by_role("button", name=re.compile(r"publish", re.I)),
+            page.locator('button:has-text("Publish")'),
+            page.locator('div[role="button"]:has-text("Publish")'),
+        ]:
+            try:
+                await locator.first.click(timeout=10000)
+                publish_clicked = True
+                break
+            except Exception:
+                continue
+        if not publish_clicked:
+            raise RuntimeError("Could not find the Publish button.")
         await page.wait_for_timeout(3000)
 
         # ── SMS verification (if triggered) ───────────────────────
@@ -305,13 +507,14 @@ def main():
 
     ensure_credentials()
     account = pick_account()
+    publish = ask_publish_mode()
 
     print(f"\nStarting profile '{account}'...")
     from mlx_context import start_profile_for
     client, started = start_profile_for(account)
 
     try:
-        asyncio.run(boost(started.cdp_url))
+        asyncio.run(boost(started.cdp_url, publish=publish))
     finally:
         client.stop_profile(started.profile_id)
 
