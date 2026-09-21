@@ -57,7 +57,23 @@ def start_profile_for(account_name: str):
         print("Run sync_profiles.py to refresh the profile list.")
         sys.exit(1)
 
+    import time
+    from multilogin_client import MultiloginError
+
     profile_id = profiles[account_name]
     client = _client()
-    started = client.start_profile(FOLDER_ID, profile_id)
-    return client, started
+
+    for attempt in range(3):
+        try:
+            started = client.start_profile(FOLDER_ID, profile_id)
+            return client, started
+        except MultiloginError as e:
+            if "LOCK_PROFILE_ERROR" in str(e) and attempt < 2:
+                print(f"  Profile is locked — stopping it and retrying ({attempt + 1}/2)...")
+                try:
+                    client.stop_profile(profile_id)
+                except Exception:
+                    pass
+                time.sleep(20)
+            else:
+                raise

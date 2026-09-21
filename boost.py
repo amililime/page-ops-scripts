@@ -12,11 +12,8 @@ import os
 import re
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
-
 ROOT = Path(__file__).parent
 ENV_FILE = ROOT / ".env"
-POSTS_FILE = ROOT / "posts.txt"
 
 
 # ── Credentials ───────────────────────────────────────────────────────────────
@@ -33,30 +30,7 @@ def _load_dotenv():
             os.environ[key.strip()] = value.strip()
 
 
-def ensure_credentials():
-    _load_dotenv()
-
-    keys = ["MLX_EMAIL", "MLX_PASSWORD", "TEXTVERIFIED_API_KEY", "TEXTVERIFIED_USERNAME"]
-    values = {k: os.environ.get(k, "").strip() for k in keys}
-
-    if all(values.values()):
-        return
-
-    print("\n── Credentials ───────────────────────────────────────────")
-    print("(Saved to .env so you only need to enter them once.)\n")
-
-    if not values["MLX_EMAIL"]:
-        values["MLX_EMAIL"] = input("  Multilogin email: ").strip()
-    if not values["MLX_PASSWORD"]:
-        values["MLX_PASSWORD"] = getpass.getpass("  Multilogin password: ").strip()
-    if not values["TEXTVERIFIED_API_KEY"]:
-        values["TEXTVERIFIED_API_KEY"] = input("  TextVerified API key: ").strip()
-    if not values["TEXTVERIFIED_USERNAME"]:
-        values["TEXTVERIFIED_USERNAME"] = input("  TextVerified username (email): ").strip()
-
-    for k, v in values.items():
-        os.environ[k] = v
-
+def _save_env(keys, values):
     existing = []
     if ENV_FILE.exists():
         existing = [l for l in ENV_FILE.read_text().splitlines()
@@ -66,21 +40,104 @@ def ensure_credentials():
     print("  Saved to .env")
 
 
+def ensure_mlx_credentials():
+    _load_dotenv()
+    keys = ["MLX_EMAIL", "MLX_PASSWORD"]
+    values = {k: os.environ.get(k, "").strip() for k in keys}
+    if all(values.values()):
+        return
+    print("\n── Multilogin credentials ────────────────────────────────")
+    print("(Saved to .env so you only need to enter them once.)\n")
+    if not values["MLX_EMAIL"]:
+        values["MLX_EMAIL"] = input("  Multilogin email: ").strip()
+    if not values["MLX_PASSWORD"]:
+        values["MLX_PASSWORD"] = getpass.getpass("  Multilogin password: ").strip()
+    for k, v in values.items():
+        os.environ[k] = v
+    _save_env(keys, values)
+
+
+def ensure_textverified_credentials():
+    _load_dotenv()
+    keys = ["TEXTVERIFIED_API_KEY", "TEXTVERIFIED_USERNAME"]
+    values = {k: os.environ.get(k, "").strip() for k in keys}
+    if all(values.values()):
+        return
+    print("\n── TextVerified credentials ──────────────────────────────")
+    print("(Saved to .env so you only need to enter them once.)\n")
+    if not values["TEXTVERIFIED_API_KEY"]:
+        values["TEXTVERIFIED_API_KEY"] = input("  TextVerified API key: ").strip()
+    if not values["TEXTVERIFIED_USERNAME"]:
+        values["TEXTVERIFIED_USERNAME"] = input("  TextVerified username (email): ").strip()
+    for k, v in values.items():
+        os.environ[k] = v
+    _save_env(keys, values)
+
+
 # ── Account picker ────────────────────────────────────────────────────────────
 
+def _run_sync():
+    import subprocess
+    subprocess.run([sys.executable, str(ROOT / "sync_profiles.py")], cwd=str(ROOT), env=os.environ.copy())
+
+
 def pick_account() -> str:
+    import json
     from mlx_context import list_accounts
+
+    profiles_file = ROOT / "mlx_profiles.json"
+    if not profiles_file.exists():
+        print("\nNo profiles file found — syncing from Multilogin now...")
+        _run_sync()
+
     accounts = list_accounts()
 
-    print("\n── Accounts ──────────────────────────────────────────────")
-    for i, name in enumerate(accounts, 1):
-        print(f"  {i}. {name}")
+    def _show_list():
+        print("\n── Accounts ──────────────────────────────────────────────")
+        for i, name in enumerate(accounts, 1):
+            print(f"  {i}. {name}")
+        print( "  S. Sync profiles from Multilogin")
+        print( "  Or type a profile name directly (e.g. EMI_AUTO_3)")
+
+    _show_list()
 
     while True:
-        choice = input(f"\n  Pick an account [1-{len(accounts)}]: ").strip()
-        if choice.isdigit() and 1 <= int(choice) <= len(accounts):
+        choice = input(f"\n  Pick [1-{len(accounts)}], S to sync, or type a name: ").strip()
+
+        if choice.lower() == "s":
+            _run_sync()
+            accounts = list_accounts()
+            _show_list()
+
+        elif choice.isdigit() and 1 <= int(choice) <= len(accounts):
             return accounts[int(choice) - 1]
-        print("  Please enter a number from the list.")
+
+        elif choice:
+            # Typed a profile name — check local json first
+            profiles = json.loads(profiles_file.read_text())
+            if choice in profiles:
+                return choice
+            # Not found — sync and check again
+            print(f"  '{choice}' not found locally — syncing from Multilogin...")
+            _run_sync()
+            accounts = list_accounts()
+            profiles = json.loads(profiles_file.read_text())
+            if choice in profiles:
+                return choice
+            # Still not found — ask for UUID (visible in Multilogin X → profile → ⋯ → Copy ID)
+            print(f"\n  '{choice}' wasn't found in the synced list (folder may have 100+ profiles).")
+            print(  "  You can find the profile UUID in Multilogin X by right-clicking the profile → Copy ID.")
+            uuid = input("  Paste the UUID here (or press Enter to cancel): ").strip()
+            if uuid and len(uuid) == 36 and uuid.count("-") == 4:
+                profiles[choice] = uuid
+                profiles_file.write_text(json.dumps(profiles, indent=2) + "\n")
+                print(f"  Saved '{choice}' → {uuid}")
+                return choice
+            print("  Cancelled.")
+            _show_list()
+
+        else:
+            print("  Please enter a number, S to sync, or a profile name.")
 
 
 def ask_publish_mode() -> bool:
@@ -89,7 +146,7 @@ def ask_publish_mode() -> bool:
         "  Publish now, or save as draft to review first?\n"
         "  [draft/publish] (default: draft): "
     ).strip().lower()
-    return choice in ("publish", "p", "yes", "y")
+    return choice.startswith(("publish", "p", "yes", "y"))
 
 
 # ── TextVerified SMS ──────────────────────────────────────────────────────────
@@ -182,13 +239,43 @@ async def _handle_verification(page) -> bool:
         return True
 
 
+# ── Auth popup dismissal ──────────────────────────────────────────────────────
+
+async def _dismiss_auth_prompt(page) -> bool:
+    """Dismiss Facebook identity/security prompts that interrupt the ad creation flow.
+    Only acts when the page actually contains auth/verification language."""
+    auth_keywords = ["verify your identity", "confirm your identity", "identity verification",
+                     "security check", "confirm it's you", "verifica tu identidad"]
+    body = (await page.evaluate("() => document.body.innerText")).lower()
+    if not any(kw in body for kw in auth_keywords):
+        return False
+    for label in ["Not now", "Skip", "Maybe later", "Remind me later"]:
+        try:
+            btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.I))
+            if await btn.count() > 0:
+                await btn.first.click(timeout=3000)
+                await page.wait_for_timeout(600)
+                return True
+        except Exception:
+            continue
+    return False
+
+
 # ── Main ad creation flow ─────────────────────────────────────────────────────
 
 async def boost(cdp_url: str, publish: bool = False):
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
-        browser = await p.chromium.connect_over_cdp(cdp_url)
+        browser = None
+        for attempt in range(10):
+            try:
+                browser = await p.chromium.connect_over_cdp(cdp_url)
+                break
+            except Exception:
+                if attempt == 9:
+                    raise
+                await asyncio.sleep(3)
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else await context.new_page()
 
@@ -209,6 +296,7 @@ async def boost(cdp_url: str, publish: bool = False):
         except Exception:
             pass
         await page.wait_for_timeout(2000)
+        await _dismiss_auth_prompt(page)
 
         # ── Create campaign ───────────────────────────────────────
         print("Creating campaign...")
@@ -240,7 +328,8 @@ async def boost(cdp_url: str, publish: bool = False):
                 pass
 
         if not clicked:
-            raise RuntimeError("Could not find the + Create campaign button in Ads Manager.")
+            await page.screenshot(path=str(ROOT / "debug_create.png"))
+            raise RuntimeError("Could not find the + Create campaign button in Ads Manager. Screenshot saved to debug_create.png")
         await page.wait_for_timeout(1500)
 
         # Wait for "Loading creation" spinner to fully disappear before interacting.
@@ -255,10 +344,7 @@ async def boost(cdp_url: str, publish: bool = False):
         except Exception:
             pass
         await page.wait_for_timeout(2000)
-
-        # Screenshot here so we always know what state the page is in after + Create
-        await page.screenshot(path=str(ROOT / "debug_after_create.png"))
-        print("  Screenshot saved: debug_after_create.png")
+        await _dismiss_auth_prompt(page)
 
         # If we landed directly on the campaign editor (Facebook remembers the last objective
         # and skips the picker), the "Next" button will already be present — skip ahead.
@@ -279,6 +365,7 @@ async def boost(cdp_url: str, publish: bool = False):
                 except Exception:
                     continue
             if not engagement_clicked:
+                await page.screenshot(path=str(ROOT / "debug_after_create.png"))
                 raise RuntimeError("Could not find Engagement objective — check debug_after_create.png")
             await page.wait_for_timeout(800)
 
@@ -305,7 +392,21 @@ async def boost(cdp_url: str, publish: bool = False):
             pass
 
         # Campaign editor page — click Next to reach the Ad Set section
-        await page.get_by_role("button", name=re.compile(r"^Next$", re.I)).click(timeout=10000)
+        next_clicked = False
+        for locator in [
+            page.get_by_role("button", name=re.compile(r"^Next$", re.I)),
+            page.locator('button:has-text("Next")'),
+            page.locator('div[role="button"]:has-text("Next")'),
+        ]:
+            try:
+                await locator.first.click(timeout=6000)
+                next_clicked = True
+                break
+            except Exception:
+                continue
+        if not next_clicked:
+            await page.screenshot(path=str(ROOT / "debug_next.png"))
+            raise RuntimeError("Could not find the Next button on campaign editor. Screenshot saved to debug_next.png")
         await page.wait_for_timeout(1500)
 
         # ── Ad set ────────────────────────────────────────────────
@@ -329,15 +430,19 @@ async def boost(cdp_url: str, publish: bool = False):
         print("Setting location: Paraguay...")
 
         async def scroll_form(amount):
-            await page.evaluate("""(amount) => {
-                const candidates = [...document.querySelectorAll('div')]
-                    .filter(el => el.scrollHeight > el.clientHeight + 50
-                                  && getComputedStyle(el).overflowY !== 'visible'
-                                  && getComputedStyle(el).overflowY !== 'hidden'
-                                  && el.clientHeight > 200);
-                const tallest = candidates.sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
-                if (tallest) tallest.scrollTop += amount;
-            }""", amount)
+            vp = page.viewport_size or {"width": 1280, "height": 800}
+            # 50% width lands in the main form area, not the left campaign tree panel
+            x = int(vp["width"] * 0.50)
+            y = int(vp["height"] * 0.5)
+            await page.mouse.move(x, y)
+            await page.mouse.wheel(0, amount)
+
+        # Expand hidden audience/location fields if collapsed
+        try:
+            await page.click("text=Show more options", timeout=3000)
+            await page.wait_for_timeout(800)
+        except Exception:
+            pass
 
         included = page.locator("text=Included location:").first
         for _ in range(40):
@@ -376,17 +481,6 @@ async def boost(cdp_url: str, publish: bool = False):
         await edit_btn.click(timeout=8000)
         await page.wait_for_timeout(1000)
 
-        # Remove all existing location chips before adding Paraguay
-        for _ in range(10):
-            try:
-                btn = await page.query_selector('div[aria-label^="Remove "]')
-                if btn is None:
-                    break
-                await btn.click()
-                await page.wait_for_timeout(400)
-            except Exception:
-                break
-
         # Find the country search input (label varies by account)
         search = None
         for sel in [
@@ -405,10 +499,27 @@ async def boost(cdp_url: str, publish: bool = False):
         if not search:
             raise RuntimeError("No location search input found after clicking Edit.")
 
+        # Add Paraguay first, then remove any chip that is not Paraguay
         await search.fill("Paraguay")
         await page.wait_for_timeout(1000)
         await search.press("Enter")
         await page.wait_for_timeout(1000)
+
+        for _ in range(10):
+            try:
+                btns = await page.query_selector_all('div[aria-label^="Remove "]')
+                removed = False
+                for btn in btns:
+                    label = await btn.get_attribute("aria-label") or ""
+                    if "Paraguay" not in label:
+                        await btn.click()
+                        await page.wait_for_timeout(400)
+                        removed = True
+                        break
+                if not removed:
+                    break
+            except Exception:
+                break
 
         await page.get_by_role("button", name=re.compile(r"^Next$", re.I)).click(timeout=10000)
         try:
@@ -417,13 +528,9 @@ async def boost(cdp_url: str, publish: bool = False):
             pass
 
         # ── Ad level: select existing post ────────────────────────
-        link_url = None
-        if POSTS_FILE.exists():
-            match = re.search(r"https?://\S+", POSTS_FILE.read_text(encoding="utf-8"))
-            if match:
-                link_url = match.group()
-
-        print(f"Selecting link post ({link_url or 'unknown URL'})...")
+        # post.py always publishes the link post first, so the newest row in
+        # the table is always the correct post to boost.
+        print("Selecting most recent post...")
         use_existing = page.locator("text=Use existing post").first
         await use_existing.wait_for(state="attached", timeout=15000)
         for _ in range(20):
@@ -436,25 +543,11 @@ async def boost(cdp_url: str, publish: bool = False):
         await page.click("text=Select post")
         await page.wait_for_timeout(2000)
 
-        # The post picker is a table sorted newest first.
-        # Rows with numeric post IDs (15+ digits) are the selectable items.
-        # If we have the link URL, prefer the row whose text contains the domain.
-        await page.wait_for_timeout(2000)
-
         rows = page.locator("text=/^\\d{15,}$/")
         await rows.first.wait_for(state="visible", timeout=15000)
-
-        chosen = None
-        if link_url:
-            domain = urlparse(link_url).netloc
-            domain_rows = rows.filter(has_text=domain)
-            if await domain_rows.count() > 0:
-                chosen = domain_rows.first
-
-        if chosen is None:
-            chosen = rows.first
-
-        await chosen.click(timeout=10000)
+        post_id = await rows.first.text_content(timeout=5000)
+        print(f"  Selecting most recent post ID: {post_id}")
+        await rows.first.click(timeout=10000)
         await page.wait_for_timeout(1000)
 
         for label in ["Continue", "Select"]:
@@ -516,9 +609,11 @@ def main():
     print("   Facebook Ad Booster")
     print("=" * 54)
 
-    ensure_credentials()
+    ensure_mlx_credentials()
     account = pick_account()
     publish = ask_publish_mode()
+    if publish:
+        ensure_textverified_credentials()
 
     print(f"\nStarting profile '{account}'...")
     from mlx_context import start_profile_for

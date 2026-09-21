@@ -172,7 +172,56 @@ def submit_post(page):
         "div[role='dialog'] [data-testid='react-composer-post-button']",
     ]
 
-    if not _click_first_visible(all_selectors):
+    # Wait up to 20s for the submit button to become enabled.
+    # It's disabled while an image is uploading or in an error state.
+    enabled_sel = (
+        "div[role='dialog'] div[aria-label='Next'][role='button']:not([aria-disabled='true']), "
+        "div[role='dialog'] div[aria-label='Post'][role='button']:not([aria-disabled='true']), "
+        "div[role='dialog'] div[role='button']:not([aria-disabled='true']):has-text('Next'), "
+        "div[role='dialog'] div[role='button']:not([aria-disabled='true']):has-text('Post')"
+    )
+    try:
+        page.wait_for_selector(enabled_sel, timeout=20000)
+    except Exception:
+        # Button still disabled — attachment failed or is stuck. Clear it.
+        print("Submit button not ready — clearing any stuck attachment...")
+        # Text-based check first (covers the explicit "can't be uploaded" error)
+        try:
+            dialog = page.locator("div[role='dialog']")
+            if dialog.filter(has_text="can't be uploaded").count() > 0:
+                print("File upload error detected.")
+        except Exception:
+            pass
+        # Remove any visible attachment regardless of error text
+        for rm_sel in [
+            "div[role='dialog'] [aria-label*='Remove']",
+            "div[role='dialog'] [aria-label*='remove']",
+        ]:
+            try:
+                rm = page.locator(rm_sel).first
+                if rm.count() > 0 and rm.is_visible():
+                    rm.click()
+                    human_pause(2.0, 3.0)
+                    break
+            except Exception:
+                continue
+
+    clicked = _click_first_visible(all_selectors)
+
+    # Last resort: force-click even if aria-disabled
+    if not clicked:
+        for selector in all_selectors:
+            try:
+                el = page.locator(selector).last
+                if el.count() > 0:
+                    el.click(force=True)
+                    clicked = True
+                    print("Force-clicked submit button.")
+                    break
+            except Exception:
+                continue
+
+    if not clicked:
         return False
 
     # Handle the Next → Post two-step flow (common with link previews):
@@ -210,8 +259,24 @@ def attach_image(page, image_path: Path) -> bool:
             with page.expect_file_chooser(timeout=5000) as fc_info:
                 locator.click()
             fc_info.value.set_files(str(image_path))
-            print(f"Image attached: {image_path.name}")
-            human_pause(3.0, 5.0)
+            # Wait for Facebook to render the image preview thumbnail before proceeding.
+            # Without this, submit_post() fires while the upload is still in flight.
+            preview_appeared = False
+            for sel in [
+                "div[role='dialog'] [aria-label*='Remove']",
+                "div[role='dialog'] img[src^='blob:']",
+            ]:
+                try:
+                    page.wait_for_selector(sel, timeout=20000)
+                    preview_appeared = True
+                    break
+                except Exception:
+                    continue
+            if preview_appeared:
+                print(f"Image attached: {image_path.name}")
+            else:
+                print(f"Image set (no preview visible): {image_path.name}")
+            human_pause(1.0, 2.0)
             return True
         except Exception:
             return False
@@ -288,12 +353,31 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
     print(f"\n── Post {index + 1} {'(with link)' if post['url'] else ''} {'📷' if image_path else ''} ──")
 
     if navigate:
-        js_navigate(page, page_url)
+        for attempt in range(4):
+            js_navigate(page, page_url)
+            try:
+                page.wait_for_selector("div[role='main']", timeout=30000)
+                break
+            except Exception:
+                if attempt == 3:
+                    print("Page failed to load after 4 attempts — continuing anyway.")
+                    break
+                wait = [5, 10, 20][attempt]
+                print(f"Page load failed (attempt {attempt + 1}/4), retrying in {wait}s...")
+                time.sleep(wait)
         human_pause(2.5, 4.0)
     else:
         # After a previous post the dialog closes and we're still on the page feed.
         # Scroll to top instantly so the "What's on your mind?" button is in view.
         human_pause(2.0, 3.0)
+        # Dismiss any dialog left open from a previous failed post
+        try:
+            close_btn = page.locator("div[role='dialog'] [aria-label='Close'], div[role='dialog'] [aria-label='close']").first
+            if close_btn.is_visible():
+                close_btn.click()
+                human_pause(1.0, 1.5)
+        except Exception:
+            pass
         try:
             page.evaluate("window.scrollTo({top: 0, behavior: 'instant'})")
         except Exception:
@@ -356,6 +440,69 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
     return True
 
 
+def _setup_session(page):
+    """Ensure we're in the page posting context. Returns the active page URL."""
+    SUFFIXES = ["LS", "HOB", "CSI", "MF"]
+
+    if "facebook.com" not in page.url:
+        js_navigate(page, "https://www.facebook.com/")
+        human_pause(2.0, 3.0)
+
+    if "login" in page.url:
+        print("Not logged in. Run manual_session.py first.")
+        sys.exit(1)
+
+    base_urls = {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}
+    already_on_page = page.url not in base_urls and any(
+        re.search(rf'\b{s}\b', page.url, re.I) for s in SUFFIXES
+    )
+
+    if already_on_page:
+        print("Already in page context.")
+    else:
+        switched = False
+        try:
+            for _ in range(25):
+                for link in page.locator("a").all():
+                    text = (link.text_content() or "").strip()
+                    if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
+                        print(f"Found page in sidebar: '{text}' — clicking...")
+                        link.click()
+                        human_pause(2.0, 3.0)
+                        for sw in [
+                            page.get_by_role("button", name=re.compile(r"switch now", re.I)),
+                            page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
+                            page.locator("div[role='button']:has-text('Switch Now'), a:has-text('Switch Now')"),
+                        ]:
+                            try:
+                                if sw.count() > 0:
+                                    print("Clicking Switch Now...")
+                                    sw.first.click()
+                                    try:
+                                        page.wait_for_load_state("domcontentloaded", timeout=60000)
+                                    except Exception:
+                                        pass
+                                    human_pause(2.0, 3.0)
+                                    break
+                            except Exception:
+                                pass
+                        switched = True
+                        break
+                if switched:
+                    break
+                page.evaluate(
+                    "document.querySelector('[data-pagelet=\"LeftRail\"]')?.scrollBy(0, 300)"
+                )
+                human_pause(0.4, 0.6)
+        except Exception:
+            pass
+
+        if not switched:
+            print("Could not find page in sidebar — continuing with current URL.")
+
+    return page.url
+
+
 def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
     posts = parse_posts(posts_path)
     print(f"Loaded {len(posts)} posts from {posts_path}")
@@ -372,98 +519,30 @@ def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT
             page = context.pages[0] if context.pages else context.new_page()
 
             print("\nChecking session...")
-            SUFFIXES = ["LS", "HOB", "CSI", "MF"]
-
-            if "facebook.com" not in page.url:
-                js_navigate(page, "https://www.facebook.com/")
-                human_pause(2.0, 3.0)
-
-            if "login" in page.url:
-                print("Not logged in. Run manual_session.py first.")
-                sys.exit(1)
-
-            # Check if already in page context
-            try:
-                main_text = page.locator("div[role='main']").text_content(timeout=8000) or ""
-            except Exception:
-                main_text = ""
-            already_on_page = any(
-                re.search(rf'\b{s}\b', page.url, re.I) or
-                re.search(rf'\b{s}\b', main_text, re.I)
-                for s in SUFFIXES
-            )
-
-            if already_on_page:
-                print("Already in page context.")
-            else:
-                switched = False
-
-                # Step 1: scroll the left sidebar with mouse wheel at x=140 (sidebar column)
-                # until the fanpage link appears under Shortcuts, then click it.
-                # Step 2: clicking the link opens the fanpage — "Switch Now" on that
-                # screen actually enters the page posting context.
-                try:
-                    for _ in range(25):
-                        for link in page.locator("a").all():
-                            text = (link.text_content() or "").strip()
-                            if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
-                                print(f"Found page in sidebar: '{text}' — clicking...")
-                                link.click()
-                                human_pause(2.0, 3.0)
-                                for sw in [
-                                    page.get_by_role("button", name=re.compile(r"switch now", re.I)),
-                                    page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
-                                    page.locator("div[role='button']:has-text('Switch Now'), a:has-text('Switch Now')"),
-                                ]:
-                                    try:
-                                        if sw.count() > 0:
-                                            print("Clicking Switch Now...")
-                                            sw.first.click()
-                                            try:
-                                                page.wait_for_load_state("domcontentloaded", timeout=60000)
-                                            except Exception:
-                                                pass
-                                            human_pause(2.0, 3.0)
-                                            break
-                                    except Exception:
-                                        pass
-                                switched = True
-                                break
-                        if switched:
-                            break
-                        page.mouse.move(140, 400)
-                        page.mouse.wheel(0, 300)
-                        human_pause(0.4, 0.6)
-                except Exception:
-                    pass
-
-                if not switched:
-                    print("Could not find page in sidebar — continuing with current URL.")
-
-            active_page_url = page.url
+            active_page_url = _setup_session(page)
             print(f"Active page URL: {active_page_url}")
-            print("Session active. Starting to post...\n")
+            print("Session active.\n")
 
             for i, post in enumerate(posts):
                 image_path = IMAGES_DIR / f"post_{i + 1}.jpg"
-                success = publish_post(
+                # Navigate on first post, or if the page drifted to a different URL
+                should_navigate = (i == 0) or not page.url.startswith(active_page_url.split("?")[0])
+                publish_post(
                     page, post, i, active_page_url,
                     image_path if image_path.exists() else None,
-                    navigate=(i == 0),
+                    navigate=should_navigate,
                 )
-                if success and i < len(posts) - 1:
+                if i < len(posts) - 1:
                     delay = random.randint(min_delay, max_delay)
                     print(f"Waiting {delay}s before next post...")
                     time.sleep(delay)
 
             print("\nAll posts done.")
-            print("Browser is open. Close it when done.")
+        finally:
             try:
-                page.wait_for_event("close", timeout=0)
+                mlx.stop_profile(started.profile_id)
             except Exception:
                 pass
-        finally:
-            pass  # Leave profile running so next run reconnects to the live session
 
 
 def main():
