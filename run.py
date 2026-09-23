@@ -69,24 +69,22 @@ def pick_account() -> str:
 
     accounts = list_accounts()
 
-    print("\n── Accounts ──────────────────────────────────────────────")
-    for i, name in enumerate(accounts, 1):
-        print(f"  {i}. {name}")
-    print(f"  S. Sync profiles from Multilogin")
+    def _show_list():
+        print("\n── Accounts ──────────────────────────────────────────────")
+        for i, name in enumerate(accounts, 1):
+            print(f"  {i}. {name}")
+        print("  Or type any profile name directly")
+
+    _show_list()
 
     while True:
-        choice = input(f"\n  Pick an account [1-{len(accounts)}] or S to sync: ").strip().lower()
-        if choice == "s":
-            run_cmd(["sync_profiles.py"])
-            accounts = list_accounts()
-            print("\n── Accounts ──────────────────────────────────────────────")
-            for i, name in enumerate(accounts, 1):
-                print(f"  {i}. {name}")
-            print(f"  S. Sync profiles from Multilogin")
-        elif choice.isdigit() and 1 <= int(choice) <= len(accounts):
+        choice = input(f"\n  Pick [1-{len(accounts)}] or type a name: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(accounts):
             return accounts[int(choice) - 1]
+        elif choice:
+            return choice  # start_profile_for will resolve via live API lookup if needed
         else:
-            print("  Please enter a number from the list, or S to sync.")
+            print("  Please enter a number or a profile name.")
 
 
 # ── Mode picker ───────────────────────────────────────────────────────────────

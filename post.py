@@ -440,18 +440,46 @@ def publish_post(page, post, index, page_url="https://www.facebook.com/", image_
     return True
 
 
-def _setup_session(page):
-    """Ensure we're in the page posting context. Returns the active page URL."""
-    SUFFIXES = ["LS", "HOB", "CSI", "MF"]
+def _switch_to_page_if_prompted(page) -> bool:
+    """Click 'Switch Now' if Facebook shows a page-switch prompt. Returns True if clicked."""
+    for sw in [
+        page.get_by_role("button", name=re.compile(r"switch now", re.I)),
+        page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
+        page.locator("div[role='button']:has-text('Switch Now'), a:has-text('Switch Now')"),
+    ]:
+        try:
+            if sw.count() > 0:
+                print("Clicking Switch Now...")
+                sw.first.click()
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=60000)
+                except Exception:
+                    pass
+                human_pause(2.0, 3.0)
+                return True
+        except Exception:
+            pass
+    return False
 
+
+def _setup_session(page, page_url=None):
+    """Ensure we're in the page posting context. Returns the active page URL."""
     if "facebook.com" not in page.url:
         js_navigate(page, "https://www.facebook.com/")
         human_pause(2.0, 3.0)
 
     if "login" in page.url:
-        print("Not logged in. Run manual_session.py first.")
-        sys.exit(1)
+        raise RuntimeError("Not logged in — run manual_session.py first.")
 
+    try:
+        if page.locator("input[name='email'], input[type='email']").count() > 0:
+            raise RuntimeError("Facebook session expired — re-login via Multilogin first.")
+    except RuntimeError:
+        raise
+    except Exception:
+        pass
+
+    SUFFIXES = ["LS", "HOB", "CSI", "MF"]
     base_urls = {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}
     already_on_page = page.url not in base_urls and any(
         re.search(rf'\b{s}\b', page.url, re.I) for s in SUFFIXES
@@ -461,88 +489,129 @@ def _setup_session(page):
         print("Already in page context.")
     else:
         switched = False
-        try:
-            for _ in range(25):
-                for link in page.locator("a").all():
-                    text = (link.text_content() or "").strip()
-                    if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
-                        print(f"Found page in sidebar: '{text}' — clicking...")
-                        link.click()
-                        human_pause(2.0, 3.0)
-                        for sw in [
-                            page.get_by_role("button", name=re.compile(r"switch now", re.I)),
-                            page.get_by_role("link",   name=re.compile(r"switch now", re.I)),
-                            page.locator("div[role='button']:has-text('Switch Now'), a:has-text('Switch Now')"),
-                        ]:
-                            try:
-                                if sw.count() > 0:
-                                    print("Clicking Switch Now...")
-                                    sw.first.click()
-                                    try:
-                                        page.wait_for_load_state("domcontentloaded", timeout=60000)
-                                    except Exception:
-                                        pass
-                                    human_pause(2.0, 3.0)
-                                    break
-                            except Exception:
-                                pass
-                        switched = True
-                        break
-                if switched:
-                    break
-                page.evaluate(
-                    "document.querySelector('[data-pagelet=\"LeftRail\"]')?.scrollBy(0, 300)"
-                )
-                human_pause(0.4, 0.6)
-        except Exception:
-            pass
 
+        # Step 1: check if Facebook is already showing a Switch Now prompt
+        switched = _switch_to_page_if_prompted(page)
+
+        # Step 2: scroll sidebar and look for a page link by category suffix
         if not switched:
-            print("Could not find page in sidebar — continuing with current URL.")
+            try:
+                for _ in range(25):
+                    for link in page.locator("a").all():
+                        text = (link.text_content() or "").strip()
+                        if any(re.search(rf'\b{s}\b', text) for s in SUFFIXES):
+                            print(f"Found page in sidebar: '{text}' — clicking...")
+                            link.click()
+                            human_pause(2.0, 3.0)
+                            _switch_to_page_if_prompted(page)
+                            switched = True
+                            break
+                    if switched:
+                        break
+                    page.evaluate(
+                        "document.querySelector('[data-pagelet=\"LeftRail\"]')?.scrollBy(0, 300)"
+                    )
+                    human_pause(0.4, 0.6)
+            except Exception:
+                pass
+
+        # Step 3: navigate to Pages Manager and pick the first managed page
+        if not switched:
+            print("Could not find page in sidebar — navigating to Pages Manager...")
+            js_navigate(page, "https://www.facebook.com/pages/manage/")
+            try:
+                page.wait_for_selector("div[role='main']", timeout=15000)
+            except Exception:
+                pass
+            human_pause(2.0, 3.0)
+
+            EXCLUDED = {"/pages/", "/settings", "/notifications", "/login",
+                        "/marketplace", "/groups", "/events", "/bookmark",
+                        "/gaming", "/watch", "action=", "story_fbid", "__cft__"}
+            page_link = None
+            for link in page.locator("a[href]").all():
+                href = link.get_attribute("href") or ""
+                if not href.startswith("https://www.facebook.com/"):
+                    continue
+                if any(x in href for x in EXCLUDED):
+                    continue
+                slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
+                if slug and "/" not in slug:
+                    page_link = href
+                    print(f"Found managed page: {href}")
+                    break
+
+            if page_link:
+                js_navigate(page, page_link)
+                try:
+                    page.wait_for_selector("div[role='main']", timeout=15000)
+                except Exception:
+                    pass
+                human_pause(2.0, 3.0)
+                _switch_to_page_if_prompted(page)
+            else:
+                raise RuntimeError(
+                    "No managed Facebook Page found. Make sure the profile is logged in "
+                    "and has a Page assigned at facebook.com/pages/manage/"
+                )
 
     return page.url
 
 
-def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
+def post_with_cdp(cdp_url, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
+    """Run the full posting flow on an already-open Multilogin profile (CDP URL).
+    Does not start or stop the profile — caller owns the lifecycle."""
     posts = parse_posts(posts_path)
     print(f"Loaded {len(posts)} posts from {posts_path}")
     for i, p in enumerate(posts):
         preview = p["text"][:60].replace("\n", " ")
         print(f"  {i+1}. {'[LINK] ' if p['url'] else ''}  {preview}...")
 
-    mlx, started = start_profile_for(account_name)
-
     with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(cdp_url)
+        context = browser.contexts[0]
+        page = context.pages[0] if context.pages else context.new_page()
+
+        print("\nChecking session...")
+        active_page_url = _setup_session(page)
+        print(f"Active page URL: {active_page_url}")
+        if active_page_url in {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}:
+            raise RuntimeError("Could not navigate to a Facebook Page — check that the profile is logged in.")
+        print("Session active.\n")
+
+        for i, post in enumerate(posts):
+            image_path = IMAGES_DIR / f"post_{i + 1}.jpg"
+            should_navigate = (i == 0) or not page.url.startswith(active_page_url.split("?")[0])
+            publish_post(
+                page, post, i, active_page_url,
+                image_path if image_path.exists() else None,
+                navigate=should_navigate,
+            )
+            if i < len(posts) - 1:
+                delay = random.randint(min_delay, max_delay)
+                print(f"Waiting {delay}s before next post...")
+                time.sleep(delay)
+
+        print("\nAll posts done.")
+
+
+def run_phase1(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
+    """Start profile, post, and return (mlx, started) with the profile still running.
+    Caller is responsible for stopping the profile afterwards."""
+    mlx, started = start_profile_for(account_name)
+    post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay)
+    return mlx, started
+
+
+def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
+    mlx, started = start_profile_for(account_name)
+    try:
+        post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay)
+    finally:
         try:
-            browser = p.chromium.connect_over_cdp(started.cdp_url)
-            context = browser.contexts[0]
-            page = context.pages[0] if context.pages else context.new_page()
-
-            print("\nChecking session...")
-            active_page_url = _setup_session(page)
-            print(f"Active page URL: {active_page_url}")
-            print("Session active.\n")
-
-            for i, post in enumerate(posts):
-                image_path = IMAGES_DIR / f"post_{i + 1}.jpg"
-                # Navigate on first post, or if the page drifted to a different URL
-                should_navigate = (i == 0) or not page.url.startswith(active_page_url.split("?")[0])
-                publish_post(
-                    page, post, i, active_page_url,
-                    image_path if image_path.exists() else None,
-                    navigate=should_navigate,
-                )
-                if i < len(posts) - 1:
-                    delay = random.randint(min_delay, max_delay)
-                    print(f"Waiting {delay}s before next post...")
-                    time.sleep(delay)
-
-            print("\nAll posts done.")
-        finally:
-            try:
-                mlx.stop_profile(started.profile_id)
-            except Exception:
-                pass
+            mlx.stop_profile(started.profile_id)
+        except Exception:
+            pass
 
 
 def main():

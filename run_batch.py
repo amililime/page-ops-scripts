@@ -1,12 +1,12 @@
 """
-post_batch.py  —  Phase 1 batch runner
-Publishes posts to multiple Facebook Page profiles concurrently,
-capped at --workers simultaneous Chrome instances (default: 2).
+run_batch.py  —  Full pipeline batch runner (Phase 1 + Phase 2)
+For each profile: posts 3 posts, then boosts the most recent one.
+All profiles run concurrently, capped at --workers simultaneous Chrome instances.
 
 Usage:
-    python post_batch.py --posts posts.txt
-    python post_batch.py --posts posts.txt --workers 2
-    python post_batch.py --posts posts.txt --profiles EMI_AUTO_2,EMI_AUTO_3
+    python run_batch.py --posts posts.txt
+    python run_batch.py --posts posts.txt --workers 2
+    python run_batch.py --posts posts.txt --profiles EMI_AUTO_2,EMI_AUTO_3 --publish
 """
 
 from __future__ import annotations
@@ -36,12 +36,10 @@ def _load_dotenv():
 
 
 def _preflight_stop(profiles: list[str]) -> None:
-    """Stop all target profiles before launching to ensure clean state."""
     import json as _json
     from mlx_context import _client
     from multilogin_client import MultiloginError
-    profiles_file = ROOT / "mlx_profiles.json"
-    profile_map = _json.loads(profiles_file.read_text())
+    profile_map = _json.loads((ROOT / "mlx_profiles.json").read_text())
     client = _client()
     for name in profiles:
         pid = profile_map.get(name)
@@ -62,36 +60,59 @@ async def run_profile(
     posts_path: str,
     min_delay: int,
     max_delay: int,
+    publish: bool,
     results: dict,
 ):
     tag = f"[{profile_name}]"
 
     async with semaphore:
         jitter = random.uniform(5, 20)
-        print(f"{tag} Waiting {jitter:.1f}s before launch (anti-detection stagger)...")
+        print(f"{tag} Waiting {jitter:.1f}s before launch...")
         await asyncio.sleep(jitter)
 
+        client = None
+        started = None
+
         try:
-            print(f"{tag} Starting...")
-            from post import run as post_run
-            await asyncio.to_thread(post_run, profile_name, posts_path, min_delay, max_delay)
+            # ── Phase 1: start profile + post (single thread — Playwright sync requires it) ──
+            print(f"{tag} Starting Multilogin profile...")
+            from post import run_phase1
+            client, started = await asyncio.to_thread(
+                run_phase1, profile_name, posts_path, min_delay, max_delay
+            )
+            print(f"{tag} Phase 1 done.")
+
+            # ── Phase 2: boost ─────────────────────────────────────────────
+            print(f"{tag} Phase 2: boosting...")
+            from boost import boost
+            await boost(started.cdp_url, publish=publish)
+            print(f"{tag} Phase 2 done.")
+
             results[profile_name] = "success"
-            print(f"{tag} Done.")
+
         except Exception as exc:
             results[profile_name] = f"error: {exc}"
             print(f"{tag} Failed: {exc}")
 
+        finally:
+            if client and started:
+                try:
+                    print(f"{tag} Stopping profile...")
+                    await asyncio.to_thread(client.stop_profile, started.profile_id)
+                except Exception as exc:
+                    print(f"{tag} Warning: stop_profile failed: {exc}")
 
-async def main_async(profiles: list[str], workers: int, posts_path: str, min_delay: int, max_delay: int):
+
+async def main_async(profiles, workers, posts_path, min_delay, max_delay, publish):
     semaphore = asyncio.Semaphore(workers)
     results: dict[str, str] = {}
 
     tasks = [
-        run_profile(name, semaphore, posts_path, min_delay, max_delay, results)
+        run_profile(name, semaphore, posts_path, min_delay, max_delay, publish, results)
         for name in profiles
     ]
 
-    print(f"\nPosting to {len(profiles)} profile(s) — {workers} worker(s) max\n")
+    print(f"\nRunning full pipeline for {len(profiles)} profile(s) — {workers} worker(s) max\n")
     await asyncio.gather(*tasks, return_exceptions=True)
 
     print("\n" + "=" * 54)
@@ -118,15 +139,17 @@ def main():
 
     all_profiles = list(json.loads(profiles_file.read_text()).keys())
 
-    parser = argparse.ArgumentParser(description="Batch publisher — post to multiple profiles.")
-    parser.add_argument("--posts",    required=True,  help="Path to posts.txt")
-    parser.add_argument("--workers",  type=int, default=2,
+    parser = argparse.ArgumentParser(description="Full pipeline — post + boost for multiple profiles.")
+    parser.add_argument("--posts",      required=True, help="Path to posts.txt")
+    parser.add_argument("--workers",    type=int, default=2,
                         help="Max simultaneous Chrome instances (default: 2)")
-    parser.add_argument("--profiles",  type=str, default=None,
+    parser.add_argument("--profiles",   type=str, default=None,
                         help="Comma-separated profile names (default: all in mlx_profiles.json)")
-    parser.add_argument("--min-delay", type=int, default=45,
+    parser.add_argument("--publish",    action="store_true",
+                        help="Publish boost campaigns (default: save as draft)")
+    parser.add_argument("--min-delay",  type=int, default=45,
                         help="Min seconds between posts (default: 45)")
-    parser.add_argument("--max-delay", type=int, default=90,
+    parser.add_argument("--max-delay",  type=int, default=90,
                         help="Max seconds between posts (default: 90)")
     args = parser.parse_args()
 
@@ -144,18 +167,22 @@ def main():
         sys.exit(0)
 
     print("=" * 54)
-    print("   Facebook Page Publisher — Batch Mode")
+    print("   Full Pipeline — Post + Boost")
     print("=" * 54)
     print(f"  Profiles : {', '.join(profiles)}")
     print(f"  Workers  : {args.workers}")
     print(f"  Posts    : {args.posts}")
     print(f"  Delay    : {args.min_delay}–{args.max_delay}s between posts")
+    print(f"  Boost    : {'Publish' if args.publish else 'Draft'}")
 
     print("\nStopping any running profiles before launch...")
     _preflight_stop(profiles)
 
     try:
-        asyncio.run(main_async(profiles, args.workers, args.posts, args.min_delay, args.max_delay))
+        asyncio.run(main_async(
+            profiles, args.workers, args.posts,
+            args.min_delay, args.max_delay, args.publish,
+        ))
     except KeyboardInterrupt:
         print("\nCancelled.")
 

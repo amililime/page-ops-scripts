@@ -187,6 +187,38 @@ class MultiloginClient:
         _save_port_cache(profile_id, port)
         return StartedProfile(profile_id=profile_id, port=port)
 
+    def search_profile_by_name(self, name: str, folder_id: str) -> str | None:
+        """Search Multilogin for a profile by exact name. Returns UUID or None."""
+        if not self._token:
+            raise MultiloginError("Call sign_in() before search_profile_by_name()")
+
+        page = 0
+        while True:
+            resp = requests.get(
+                f"{AUTH_BASE}/user/profile",
+                headers={"Authorization": f"Bearer {self._token}"},
+                params={"search": name, "folder_id": folder_id, "count": 100, "page": page},
+                timeout=15,
+            )
+            if not resp.ok:
+                raise MultiloginError(f"Profile search failed ({resp.status_code}): {resp.text}")
+
+            try:
+                body = resp.json()
+                # Handle both {data: [...]} and {data: {profiles: [...]}} shapes
+                data = body.get("data", [])
+                profiles = data if isinstance(data, list) else data.get("profiles", [])
+            except Exception as exc:
+                raise MultiloginError(f"Unexpected profile search response: {resp.text}") from exc
+
+            for profile in profiles:
+                if profile.get("name") == name:
+                    return profile.get("uuid") or profile.get("id")
+
+            if len(profiles) < 100:
+                return None
+            page += 1
+
     def stop_profile(self, profile_id: str) -> None:
         """Stop a running profile. Logs a warning rather than raising so it's safe in a finally block."""
         if not self._token:

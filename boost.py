@@ -113,28 +113,7 @@ def pick_account() -> str:
             return accounts[int(choice) - 1]
 
         elif choice:
-            # Typed a profile name — check local json first
-            profiles = json.loads(profiles_file.read_text())
-            if choice in profiles:
-                return choice
-            # Not found — sync and check again
-            print(f"  '{choice}' not found locally — syncing from Multilogin...")
-            _run_sync()
-            accounts = list_accounts()
-            profiles = json.loads(profiles_file.read_text())
-            if choice in profiles:
-                return choice
-            # Still not found — ask for UUID (visible in Multilogin X → profile → ⋯ → Copy ID)
-            print(f"\n  '{choice}' wasn't found in the synced list (folder may have 100+ profiles).")
-            print(  "  You can find the profile UUID in Multilogin X by right-clicking the profile → Copy ID.")
-            uuid = input("  Paste the UUID here (or press Enter to cancel): ").strip()
-            if uuid and len(uuid) == 36 and uuid.count("-") == 4:
-                profiles[choice] = uuid
-                profiles_file.write_text(json.dumps(profiles, indent=2) + "\n")
-                print(f"  Saved '{choice}' → {uuid}")
-                return choice
-            print("  Cancelled.")
-            _show_list()
+            return choice  # start_profile_for resolves via live API lookup if not in local map
 
         else:
             print("  Please enter a number, S to sync, or a profile name.")
@@ -636,4 +615,3 @@ if __name__ == "__main__":
         print("\n\nCancelled.")
     except Exception as exc:
         print(f"\n\nError: {exc}")
-    input("\nPress Enter to close...")
