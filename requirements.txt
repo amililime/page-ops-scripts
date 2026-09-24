@@ -4,3 +4,5 @@ requests
 openpyxl
 reportlab
 textverified
+huggingface_hub
+pillow

@@ -163,7 +163,7 @@ class MultiloginClient:
 
         log.info("Profile %s already running — no cached port, stopping and restarting...", profile_id)
         self.stop_profile(profile_id)
-        time.sleep(2)
+        time.sleep(10)
 
         url = (
             f"{LAUNCHER_BASE}/api/v2/profile/f/{folder_id}/p/{profile_id}/start"
@@ -227,7 +227,7 @@ class MultiloginClient:
             resp = requests.get(
                 f"{LAUNCHER_BASE}/api/v1/profile/stop/p/{profile_id}",
                 headers={"Authorization": f"Bearer {self._token}"},
-                timeout=15,
+                timeout=30,
             )
             if not resp.ok:
                 log.warning("stop_profile(%s) returned %s: %s", profile_id, resp.status_code, resp.text)

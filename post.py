@@ -17,6 +17,7 @@ Requirements:
 """
 
 import argparse
+import json
 import os
 import random
 import re
@@ -27,6 +28,28 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright
 
 from mlx_context import start_profile_for
+
+PAGE_URLS_PATH = Path(__file__).parent / "page_urls.json"
+
+
+def _load_page_urls() -> dict:
+    try:
+        return json.loads(PAGE_URLS_PATH.read_text())
+    except Exception:
+        return {}
+
+
+def _save_page_url(account: str, url: str) -> None:
+    data = _load_page_urls()
+    id_match = re.search(r'[?&]id=(\d+)', url)
+    if id_match:
+        clean = f"https://www.facebook.com/{id_match.group(1)}"
+    else:
+        clean = url.split("?")[0].rstrip("/")
+    if data.get(account) != clean:
+        data[account] = clean
+        PAGE_URLS_PATH.write_text(json.dumps(data, indent=2) + "\n")
+        print(f"  Cached page URL for {account}: {clean}")
 
 DEFAULT_MIN_DELAY = 45
 DEFAULT_MAX_DELAY = 90
@@ -86,34 +109,49 @@ def human_pause(min_s=0.8, max_s=2.0):
 
 
 def open_composer(page):
-    """Click 'What's on your mind?' in the main feed only, then wait for the dialog."""
+    """Click 'What's on your mind?' then wait for the dialog to open."""
     human_pause(1.0, 1.5)
 
-    for selector in [
+    # Scroll down slightly so the composer box comes into view
+    try:
+        page.evaluate("window.scrollBy(0, 300)")
+        human_pause(0.5, 1.0)
+    except Exception:
+        pass
+
+    COMPOSER_SELECTORS = [
         "div[role='main'] div[role='button']:has-text(\"What's on your mind\")",
         "div[role='main'] div[aria-label*=\"What's on your mind\"]",
         "div[role='main'] span:has-text(\"What's on your mind\")",
         "div[role='button']:has-text(\"What's on your mind\")",
         "[aria-label*=\"What's on your mind\"]",
-    ]:
+    ]
+    CONFIRM_SELECTORS = [
+        "div[contenteditable='true'][role='textbox']",
+        "div[role='dialog']",
+        "div[aria-label='Create post']",
+    ]
+
+    for selector in COMPOSER_SELECTORS:
         try:
             el = page.locator(selector).first
-            if el.is_visible():
-                el.click()
-                human_pause(2.0, 3.0)
-                # Confirm dialog opened by waiting for the textbox, not role='dialog'
-                # (Facebook Pages use a different container structure)
-                for confirm in [
-                    "div[contenteditable='true'][role='textbox']",
-                    "div[role='dialog']",
-                    "div[aria-label='Create post']",
-                ]:
-                    try:
-                        page.wait_for_selector(confirm, timeout=5000)
-                        human_pause(1.0, 1.5)
-                        return True
-                    except Exception:
-                        continue
+            if el.count() == 0:
+                continue
+            # Scroll element into view even if partially off-screen
+            try:
+                el.scroll_into_view_if_needed(timeout=3000)
+                human_pause(0.3, 0.6)
+            except Exception:
+                pass
+            el.click()
+            human_pause(2.0, 3.0)
+            for confirm in CONFIRM_SELECTORS:
+                try:
+                    page.wait_for_selector(confirm, timeout=5000)
+                    human_pause(1.0, 1.5)
+                    return True
+                except Exception:
+                    continue
         except Exception:
             continue
 
@@ -462,11 +500,25 @@ def _switch_to_page_if_prompted(page) -> bool:
     return False
 
 
-def _setup_session(page, page_url=None):
+def _setup_session(page, account_name: str = ""):
     """Ensure we're in the page posting context. Returns the active page URL."""
     if "facebook.com" not in page.url:
         js_navigate(page, "https://www.facebook.com/")
         human_pause(2.0, 3.0)
+
+    # Fast path: use cached page URL if we have it
+    if account_name:
+        cached_url = _load_page_urls().get(account_name)
+        if cached_url:
+            print(f"Using cached page URL: {cached_url}")
+            js_navigate(page, cached_url)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=15000)
+            except Exception:
+                pass
+            human_pause(2.0, 3.0)
+            _switch_to_page_if_prompted(page)
+            return page.url
 
     if "login" in page.url:
         raise RuntimeError("Not logged in — run manual_session.py first.")
@@ -504,7 +556,8 @@ def _setup_session(page, page_url=None):
                             link.click()
                             human_pause(2.0, 3.0)
                             _switch_to_page_if_prompted(page)
-                            switched = True
+                            if page.url not in base_urls:
+                                switched = True
                             break
                     if switched:
                         break
@@ -520,26 +573,49 @@ def _setup_session(page, page_url=None):
             print("Could not find page in sidebar — navigating to Pages Manager...")
             js_navigate(page, "https://www.facebook.com/pages/manage/")
             try:
-                page.wait_for_selector("div[role='main']", timeout=15000)
+                page.wait_for_load_state("domcontentloaded", timeout=20000)
+            except Exception:
+                pass
+            try:
+                page.wait_for_selector("div[role='main']", timeout=10000)
             except Exception:
                 pass
             human_pause(2.0, 3.0)
 
-            EXCLUDED = {"/pages/", "/settings", "/notifications", "/login",
-                        "/marketplace", "/groups", "/events", "/bookmark",
-                        "/gaming", "/watch", "action=", "story_fbid", "__cft__"}
+            EXCLUDED_SLUGS = {
+                "pages", "settings", "notifications", "login", "marketplace",
+                "groups", "events", "bookmarks", "gaming", "watch", "help",
+                "privacy", "policies", "terms", "about", "business", "ads",
+                "friends", "memories", "saved", "videos", "photos", "reels",
+                "fundraisers", "climate", "jobs", "professional-dashboard",
+                "facebook", "messenger", "instagram",
+            }
+            EXCLUDED_PARAMS = {"action=", "story_fbid", "__cft__"}
             page_link = None
-            for link in page.locator("a[href]").all():
-                href = link.get_attribute("href") or ""
+            all_links = page.locator("a[href]").all()
+            # Pass 1: prefer numeric page IDs (most reliable)
+            for link in all_links:
+                href = (link.get_attribute("href") or "").split("?")[0]
                 if not href.startswith("https://www.facebook.com/"):
                     continue
-                if any(x in href for x in EXCLUDED):
-                    continue
-                slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
-                if slug and "/" not in slug:
+                slug = href.replace("https://www.facebook.com/", "").strip("/")
+                if re.match(r'^\d{10,}$', slug):
                     page_link = href
-                    print(f"Found managed page: {href}")
+                    print(f"Found managed page (ID): {href}")
                     break
+            # Pass 2: slug-based with expanded exclusion list
+            if not page_link:
+                for link in all_links:
+                    href = link.get_attribute("href") or ""
+                    if not href.startswith("https://www.facebook.com/"):
+                        continue
+                    if any(p in href for p in EXCLUDED_PARAMS):
+                        continue
+                    slug = href.replace("https://www.facebook.com/", "").split("?")[0].strip("/")
+                    if slug and "/" not in slug and slug not in EXCLUDED_SLUGS:
+                        page_link = href
+                        print(f"Found managed page (slug): {href}")
+                        break
 
             if page_link:
                 js_navigate(page, page_link)
@@ -558,7 +634,7 @@ def _setup_session(page, page_url=None):
     return page.url
 
 
-def post_with_cdp(cdp_url, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
+def post_with_cdp(cdp_url, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY, account_name=""):
     """Run the full posting flow on an already-open Multilogin profile (CDP URL).
     Does not start or stop the profile — caller owns the lifecycle."""
     posts = parse_posts(posts_path)
@@ -568,15 +644,36 @@ def post_with_cdp(cdp_url, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DE
         print(f"  {i+1}. {'[LINK] ' if p['url'] else ''}  {preview}...")
 
     with sync_playwright() as p:
-        browser = p.chromium.connect_over_cdp(cdp_url)
+        last_err = None
+        for _attempt in range(6):
+            try:
+                browser = p.chromium.connect_over_cdp(cdp_url)
+                break
+            except Exception as e:
+                last_err = e
+                wait = 5 * (_attempt + 1)
+                print(f"  CDP not ready yet — retrying in {wait}s ({_attempt + 1}/6)...")
+                time.sleep(wait)
+        else:
+            raise RuntimeError(f"Could not connect to Multilogin browser after 6 attempts: {last_err}")
         context = browser.contexts[0]
         page = context.pages[0] if context.pages else context.new_page()
 
         print("\nChecking session...")
-        active_page_url = _setup_session(page)
+        try:
+            active_page_url = _setup_session(page, account_name)
+        except Exception as e:
+            if "closed" in str(e).lower() or "target" in str(e).lower():
+                raise RuntimeError(
+                    "Multilogin browser closed unexpectedly during session setup — "
+                    "the profile may have been stopped by a previous run. Retry in a few seconds."
+                ) from e
+            raise
         print(f"Active page URL: {active_page_url}")
         if active_page_url in {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}:
             raise RuntimeError("Could not navigate to a Facebook Page — check that the profile is logged in.")
+        if account_name:
+            _save_page_url(account_name, active_page_url)
         print("Session active.\n")
 
         for i, post in enumerate(posts):
@@ -599,14 +696,14 @@ def run_phase1(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=
     """Start profile, post, and return (mlx, started) with the profile still running.
     Caller is responsible for stopping the profile afterwards."""
     mlx, started = start_profile_for(account_name)
-    post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay)
+    post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay, account_name=account_name)
     return mlx, started
 
 
 def run(account_name, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DEFAULT_MAX_DELAY):
     mlx, started = start_profile_for(account_name)
     try:
-        post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay)
+        post_with_cdp(started.cdp_url, posts_path, min_delay, max_delay, account_name=account_name)
     finally:
         try:
             mlx.stop_profile(started.profile_id)

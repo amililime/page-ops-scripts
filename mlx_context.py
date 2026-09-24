@@ -70,10 +70,6 @@ def _search_via_xcli(name: str, folder_id: str) -> str | None:
             print(f"  [xcli] login failed: {login_result.stderr or login_result.stdout}")
             return None
         print(f"  [xcli] login OK — listing profiles...")
-        result = subprocess.run(
-            [str(xcli), "profile-list", "-f", folder_id, "-l", "9999"],
-            capture_output=True, text=True,
-        )
     except Exception as e:
         print(f"  [xcli] error: {e}")
         return None

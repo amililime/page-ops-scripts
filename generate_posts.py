@@ -423,7 +423,7 @@ def extract_category(text: str) -> tuple[str, str] | tuple[None, None]:
 
 # ── Image generation (Hugging Face) ──────────────────────────────────────────
 
-HF_API_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+HF_MODEL = "black-forest-labs/FLUX.1-schnell"
 
 
 def _hf_token() -> str | None:
@@ -441,6 +441,12 @@ def generate_image(prompt: str, index: int) -> Path | None:
         print(f"  Skipping image {index + 1} — HF_TOKEN not set in .env")
         return None
 
+    try:
+        from huggingface_hub import InferenceClient
+    except ImportError:
+        print("  huggingface_hub not installed — run: pip install huggingface_hub")
+        return None
+
     IMAGES_DIR.mkdir(exist_ok=True)
     out = IMAGES_DIR / f"post_{index + 1}.jpg"
     clean_prompt = prompt + ", no text, no words, no watermark, photorealistic, high quality"
@@ -448,27 +454,21 @@ def generate_image(prompt: str, index: int) -> Path | None:
     print(f"  Generating image {index + 1}...", end=" ", flush=True)
     for attempt in range(3):
         try:
-            resp = requests.post(
-                HF_API_URL,
-                headers={"Authorization": f"Bearer {token}"},
-                json={"inputs": clean_prompt},
-                timeout=60,
-            )
-            if resp.ok:
-                out.write_bytes(resp.content)
-                print(f"saved → {out.name}")
-                return out
-            elif resp.status_code == 503:
-                import time as _t
+            client = InferenceClient(token=token)
+            img = client.text_to_image(clean_prompt, model=HF_MODEL)
+            img.save(str(out))
+            print(f"saved → {out.name}")
+            return out
+        except Exception as exc:
+            err = str(exc)
+            if "loading" in err.lower() or "503" in err:
                 wait = (attempt + 1) * 10
                 print(f"model loading, retrying in {wait}s...", end=" ", flush=True)
+                import time as _t
                 _t.sleep(wait)
             else:
-                print(f"failed ({resp.status_code}: {resp.text[:100]})")
+                print(f"failed: {err[:120]}")
                 return None
-        except requests.RequestException as exc:
-            print(f"error: {exc}")
-            return None
     print("failed after 3 attempts")
     return None
 
