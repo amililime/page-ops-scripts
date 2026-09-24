@@ -380,7 +380,11 @@ def attach_image(page, image_path: Path) -> bool:
 
 def js_navigate(page, url):
     """Navigate using window.location so Multilogin's proxy handles auth correctly."""
-    page.evaluate(f"window.location.href = '{url}'")
+    try:
+        page.evaluate(f"window.location.href = '{url}'")
+    except Exception as e:
+        if "Execution context was destroyed" not in str(e):
+            raise
     try:
         page.wait_for_load_state("domcontentloaded", timeout=60000)
     except Exception:
@@ -502,14 +506,28 @@ def _switch_to_page_if_prompted(page) -> bool:
 
 def _setup_session(page, account_name: str = ""):
     """Ensure we're in the page posting context. Returns the active page URL."""
+    base_urls = {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}
+
+    # Fast path: if browser is already on the cached page, skip navigation entirely
+    if account_name:
+        cached_url = _load_page_urls().get(account_name)
+        if cached_url:
+            cached_id = cached_url.rstrip("/").split("/")[-1]
+            current = page.url
+            if cached_id and cached_id in current:
+                print(f"Using cached page URL: {cached_url}")
+                print(f"Active page URL: {current}")
+                _switch_to_page_if_prompted(page)
+                return page.url
+
     if "facebook.com" not in page.url:
         js_navigate(page, "https://www.facebook.com/")
         human_pause(2.0, 3.0)
 
-    # Fast path: use cached page URL if we have it
+    # Navigate to cached URL if we're not already on the right page
     if account_name:
         cached_url = _load_page_urls().get(account_name)
-        if cached_url:
+        if cached_url and page.url in base_urls:
             print(f"Using cached page URL: {cached_url}")
             js_navigate(page, cached_url)
             try:
@@ -532,7 +550,6 @@ def _setup_session(page, account_name: str = ""):
         pass
 
     SUFFIXES = ["LS", "HOB", "CSI", "MF"]
-    base_urls = {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}
     already_on_page = page.url not in base_urls and any(
         re.search(rf'\b{s}\b', page.url, re.I) for s in SUFFIXES
     )

@@ -277,6 +277,17 @@ async def boost(cdp_url: str, publish: bool = False):
         await page.wait_for_timeout(2000)
         await _dismiss_auth_prompt(page)
 
+        # ── Dismiss policy / consent modals ──────────────────────
+        for label in ["I accept", "Accept", "Got it", "OK", "Continue"]:
+            try:
+                btn = page.get_by_role("button", name=re.compile(rf"^{re.escape(label)}$", re.I))
+                if await btn.count() > 0 and await btn.first.is_visible(timeout=3000):
+                    await btn.first.click(timeout=5000)
+                    await page.wait_for_timeout(1500)
+                    print(f"  Dismissed policy modal: '{label}'")
+            except Exception:
+                continue
+
         # ── Create campaign ───────────────────────────────────────
         print("Creating campaign...")
         await page.wait_for_timeout(2000)

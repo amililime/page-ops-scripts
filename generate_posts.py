@@ -370,6 +370,31 @@ def generate_three_posts(category: str, url: str) -> tuple[list[str], list[str]]
     return posts, images
 
 
+def generate_for_profiles(profiles: list[str], category: str, url: str) -> dict[str, Path]:
+    """Generate unique posts for each profile, saved as posts_{profile}.txt.
+    Uses a shared used-content tracker across all profiles so no two get the same opener/body/closer."""
+    root = Path(__file__).parent
+    used = _load_used(category)
+    results: dict[str, Path] = {}
+
+    for profile in profiles:
+        posts = []
+        for i in range(3):
+            post, _ = build_post(category, used["openers"], used["closers"],
+                                 used["images"], used["bodies"])
+            if i == 0:
+                post = f"{post}\n{url}"
+            posts.append(post)
+
+        path = root / f"posts_{profile}.txt"
+        path.write_text("\n\n".join(posts) + "\n", encoding="utf-8")
+        print(f"  {profile} → {path.name}")
+        results[profile] = path
+
+    _save_used(category, used)
+    return results
+
+
 # ── Page name detection ───────────────────────────────────────────────────────
 
 def detect_page_name(page) -> str | None:

@@ -74,7 +74,9 @@ async def run_profile(
         try:
             print(f"{tag} Starting...")
             from post import run as post_run
-            await asyncio.to_thread(post_run, profile_name, posts_path, min_delay, max_delay)
+            per_profile = ROOT / f"posts_{profile_name}.txt"
+            effective_posts = str(per_profile) if per_profile.exists() else posts_path
+            await asyncio.to_thread(post_run, profile_name, effective_posts, min_delay, max_delay)
             results[profile_name] = "success"
             print(f"{tag} Done.")
         except Exception as exc:

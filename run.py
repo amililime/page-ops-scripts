@@ -91,15 +91,16 @@ def pick_account() -> str:
 
 def pick_mode() -> str:
     print("\n── What do you want to do? ───────────────────────────────")
-    print("  1. Generate posts + publish  (full run)")
-    print("  2. Generate posts only")
-    print("  3. Publish existing posts.txt")
+    print("  1. Generate posts + publish  (full run, one profile)")
+    print("  2. Generate posts only       (one profile)")
+    print("  3. Publish existing posts.txt (one profile)")
+    print("  4. Batch: generate unique posts per profile + publish all")
 
     while True:
-        choice = input("\n  Pick [1-3]: ").strip()
-        if choice in ("1", "2", "3"):
+        choice = input("\n  Pick [1-4]: ").strip()
+        if choice in ("1", "2", "3", "4"):
             return choice
-        print("  Please enter 1, 2, or 3.")
+        print("  Please enter 1, 2, 3, or 4.")
 
 
 # ── Category picker (optional override) ──────────────────────────────────────
@@ -148,6 +149,63 @@ def generate(account: str, category: str | None) -> bool:
     return run_cmd(cmd)
 
 
+def batch_generate_and_publish(category: str | None) -> bool:
+    import json
+    from mlx_context import list_accounts
+
+    profiles = list_accounts()
+    if not profiles:
+        print("No profiles found in mlx_profiles.json.")
+        return False
+
+    print(f"\n  Profiles: {', '.join(profiles)}")
+
+    if not category:
+        CATEGORIES = {"1": "LS", "2": "HOB", "3": "CSI", "4": "MF"}
+        LABELS = {"LS": "Lifestyle", "HOB": "Hobbies",
+                  "CSI": "Career and Self Improvement", "MF": "Market and Finance"}
+        print("\n── Post category ─────────────────────────────────────────")
+        for k, code in CATEGORIES.items():
+            print(f"  {k}. {code} — {LABELS[code]}")
+        while True:
+            choice = input("\n  Pick [1-4]: ").strip()
+            if choice in CATEGORIES:
+                category = CATEGORIES[choice]
+                break
+            print("  Please enter 1, 2, 3, or 4.")
+
+    workers = input(f"\n  How many profiles to run simultaneously? [default: {min(3, len(profiles))}]: ").strip()
+    workers = int(workers) if workers.isdigit() and int(workers) > 0 else min(3, len(profiles))
+
+    print("\n" + "─" * 54)
+    print(f"Generating unique posts for {len(profiles)} profiles...")
+    print("─" * 54)
+
+    from generate_posts import generate_for_profiles, _hf_token, generate_image, IMAGES_DIR, write_images_txt
+    from generate_posts import generate_three_posts, CATEGORY_MAP
+
+    cat_name = CATEGORY_MAP[category]
+    print(f"Category: {cat_name}\n")
+    generate_for_profiles(profiles, cat_name, "https://visioncompassdesk.com")
+
+    hf = _hf_token()
+    if hf:
+        print("\nGenerating 3 shared images via Hugging Face...")
+        _, image_prompts = generate_three_posts(cat_name, "https://visioncompassdesk.com")
+        write_images_txt(image_prompts)
+        saved = [generate_image(p, i) for i, p in enumerate(image_prompts)]
+        print(f"{sum(1 for p in saved if p)}/3 images saved.")
+    else:
+        print("\nNo HF_TOKEN — place images manually as images/post_1.jpg, post_2.jpg, post_3.jpg")
+
+    print("\n" + "─" * 54)
+    print(f"Batch publishing to {len(profiles)} profiles ({workers} at a time)...")
+    print("─" * 54)
+
+    return run_cmd(["post_batch.py", "--posts", str(ROOT / "posts.txt"),
+                    "--workers", str(workers)])
+
+
 def publish(account: str) -> bool:
     if not POSTS_FILE.exists():
         print(f"\nError: {POSTS_FILE} not found. Run 'Generate posts' first.")
@@ -166,23 +224,27 @@ def main():
     print("=" * 54)
 
     ensure_credentials()
-    account = pick_account()
     mode = pick_mode()
 
     ok = True
 
-    if mode == "1":
+    if mode == "4":
         category = pick_category()
-        ok = generate(account, category)
-        if ok:
+        ok = batch_generate_and_publish(category)
+    else:
+        account = pick_account()
+        if mode == "1":
+            category = pick_category()
+            ok = generate(account, category)
+            if ok:
+                ok = publish(account)
+
+        elif mode == "2":
+            category = pick_category()
+            ok = generate(account, category)
+
+        elif mode == "3":
             ok = publish(account)
-
-    elif mode == "2":
-        category = pick_category()
-        ok = generate(account, category)
-
-    elif mode == "3":
-        ok = publish(account)
 
     print("\n" + "=" * 54)
     if ok:
