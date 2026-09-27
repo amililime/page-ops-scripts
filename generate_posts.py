@@ -151,7 +151,7 @@ TEMPLATES = {
         ],
         "emojis_pool": ["🎨", "🎯", "🖌️", "📷", "🎸", "✂️", "🪴", "📚", "🎭", "🧩"],
         "images": [
-            "Close-up of hands working on a craft project — thread, clay, or wood — in warm natural light.",
+            "A craft project in progress on a wooden table — thread, clay, or tools — in warm natural light.",
             "A flat lay of hobby tools and materials arranged neatly on a textured surface.",
             "Someone fully focused on a creative activity at a well-lit table, from behind.",
             "A bookshelf, instrument, or creative corner shot in golden hour light.",
@@ -212,7 +212,7 @@ TEMPLATES = {
             "A whiteboard or notebook with a clear, simple diagram — not branded, just structure.",
             "A calm workspace at the end of the day — one lamp on, organized desk.",
             "Two people in a focused conversation at a table, no phones visible.",
-            "A close-up of a highlighted page in an open book with a coffee in the background.",
+            "An open highlighted book on a desk with a coffee cup in the background, top-down view.",
         ],
     },
 
@@ -267,7 +267,7 @@ TEMPLATES = {
             "A simple bar or line graph printed on paper, placed on a wooden table.",
             "Someone looking at a phone screen with charts, photographed from the side in good light.",
             "A tidy workspace with a single plant, a notebook, and a glass of water.",
-            "Close-up of hands writing numbers in a notebook — warm, natural light.",
+            "An open notebook with numbers and a pen resting on it — warm, natural light, no person visible.",
         ],
     },
 }
@@ -474,7 +474,11 @@ def generate_image(prompt: str, index: int) -> Path | None:
 
     IMAGES_DIR.mkdir(exist_ok=True)
     out = IMAGES_DIR / f"post_{index + 1}.jpg"
-    clean_prompt = prompt + ", no text, no words, no watermark, photorealistic, high quality"
+    clean_prompt = (
+        prompt
+        + ", no text, no words, no watermark, photorealistic, high quality"
+        + ", no close-up of hands or fingers, no deformed anatomy, no extra fingers"
+    )
 
     print(f"  Generating image {index + 1}...", end=" ", flush=True)
     for attempt in range(3):
