@@ -531,39 +531,28 @@ def _setup_session(page, account_name: str = ""):
     """Ensure we're in the page posting context. Returns the active page URL."""
     base_urls = {"https://www.facebook.com/", "https://www.facebook.com", "https://m.facebook.com/"}
 
-    # Fast path: if browser is already on the cached page, skip navigation entirely
-    if account_name:
-        cached_url = _load_page_urls().get(account_name)
-        if cached_url and not _is_valid_page_url(cached_url):
-            cached_url = None  # stale/bad cache entry — ignore it
-        if cached_url:
-            cached_id = cached_url.rstrip("/").split("/")[-1]
-            current = page.url
-            if cached_id and cached_id in current:
-                print(f"Using cached page URL: {cached_url}")
-                print(f"Active page URL: {current}")
-                _switch_to_page_if_prompted(page)
-                return page.url
-
-    if "facebook.com" not in page.url:
-        js_navigate(page, "https://www.facebook.com/")
-        human_pause(2.0, 3.0)
-
-    # Navigate to cached URL if we're anywhere on Facebook but not the right page
+    # If we have a valid cached URL, use it — navigate if not already there
     if account_name:
         cached_url = _load_page_urls().get(account_name)
         if cached_url and not _is_valid_page_url(cached_url):
             cached_url = None
-        if cached_url and "facebook.com" in page.url:
+        if cached_url:
+            cached_id = cached_url.rstrip("/").split("/")[-1]
+            already_there = cached_id and cached_id in page.url
             print(f"Using cached page URL: {cached_url}")
-            js_navigate(page, cached_url)
-            try:
-                page.wait_for_load_state("domcontentloaded", timeout=15000)
-            except Exception:
-                pass
-            human_pause(2.0, 3.0)
+            if not already_there:
+                js_navigate(page, cached_url)
+                try:
+                    page.wait_for_load_state("domcontentloaded", timeout=15000)
+                except Exception:
+                    pass
+                human_pause(2.0, 3.0)
             _switch_to_page_if_prompted(page)
             return page.url
+
+    if "facebook.com" not in page.url:
+        js_navigate(page, "https://www.facebook.com/")
+        human_pause(2.0, 3.0)
 
     if "login" in page.url:
         raise RuntimeError("Not logged in — run manual_session.py first.")

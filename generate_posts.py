@@ -481,7 +481,9 @@ def generate_image(prompt: str, index: int) -> Path | None:
         try:
             client = InferenceClient(token=token)
             img = client.text_to_image(clean_prompt, model=HF_MODEL)
-            img.save(str(out))
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            img.save(str(out), "JPEG", quality=90, optimize=True)
             print(f"saved → {out.name}")
             return out
         except Exception as exc:
