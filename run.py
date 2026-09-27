@@ -158,7 +158,36 @@ def batch_generate_and_publish(category: str | None) -> bool:
         print("No profiles found in mlx_profiles.json.")
         return False
 
-    print(f"\n  Profiles: {', '.join(profiles)}")
+    # ── Profile selection ──────────────────────────────────────────────────
+    print(f"\n── Batch mode: profile selection ─────────────────────────")
+    print(f"  Available ({len(profiles)}): {', '.join(profiles)}")
+    print(f"\n  A        — run all {len(profiles)} profiles")
+    print(f"  15       — run first 15  (or any number)")
+    print(f"  name,... — comma-separated list (e.g. EMI_AUTO_2,EMI_AUTO_5)")
+
+    while True:
+        sel = input("\n  Pick: ").strip()
+        if not sel or sel.upper() == "A":
+            selected = profiles
+            break
+        elif sel.isdigit():
+            n = int(sel)
+            selected = profiles[:n]
+            if not selected:
+                print(f"  No profiles available.")
+                continue
+            break
+        else:
+            names = [s.strip() for s in sel.split(",") if s.strip()]
+            invalid = [n for n in names if n not in profiles]
+            if invalid:
+                print(f"  Unknown profiles: {', '.join(invalid)}. Available: {', '.join(profiles)}")
+                continue
+            selected = names
+            break
+
+    profiles = selected
+    print(f"\n  Running on {len(profiles)} profile(s): {', '.join(profiles)}")
 
     if not category:
         CATEGORIES = {"1": "LS", "2": "HOB", "3": "CSI", "4": "MF"}
@@ -174,8 +203,8 @@ def batch_generate_and_publish(category: str | None) -> bool:
                 break
             print("  Please enter 1, 2, 3, or 4.")
 
-    workers = input(f"\n  How many profiles to run simultaneously? [default: {min(3, len(profiles))}]: ").strip()
-    workers = int(workers) if workers.isdigit() and int(workers) > 0 else min(3, len(profiles))
+    workers = input(f"\n  How many to run simultaneously? [default: {min(len(profiles), 5)}]: ").strip()
+    workers = int(workers) if workers.isdigit() and int(workers) > 0 else min(len(profiles), 5)
 
     print("\n" + "─" * 54)
     print(f"Generating unique posts for {len(profiles)} profiles...")
@@ -203,6 +232,7 @@ def batch_generate_and_publish(category: str | None) -> bool:
     print("─" * 54)
 
     return run_cmd(["post_batch.py", "--posts", str(ROOT / "posts.txt"),
+                    "--profiles", ",".join(profiles),
                     "--workers", str(workers)])
 
 
