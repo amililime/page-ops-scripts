@@ -39,6 +39,27 @@ def _load_page_urls() -> dict:
         return {}
 
 
+_INVALID_PAGE_SLUGS = {
+    "professional_dashboard", "professional-dashboard", "dashboard",
+    "creatorstudio", "pages", "settings", "notifications", "help",
+    "login", "marketplace", "groups", "events", "bookmarks", "watch",
+    "friends", "memories", "saved", "videos", "photos", "reels",
+    "business", "ads", "about", "privacy", "policies", "terms",
+    "fundraisers", "climate", "jobs", "facebook", "messenger", "instagram",
+}
+
+
+def _is_valid_page_url(url: str) -> bool:
+    """Return True only if url looks like a real Facebook Page (not a dashboard or tool)."""
+    clean = url.split("?")[0].rstrip("/")
+    slug = clean.replace("https://www.facebook.com/", "").strip("/")
+    if not slug or slug in _INVALID_PAGE_SLUGS:
+        return False
+    if "/" in slug and not slug.startswith("pages/"):
+        return False
+    return True
+
+
 def _save_page_url(account: str, url: str) -> None:
     data = _load_page_urls()
     id_match = re.search(r'[?&]id=(\d+)', url)
@@ -46,6 +67,8 @@ def _save_page_url(account: str, url: str) -> None:
         clean = f"https://www.facebook.com/{id_match.group(1)}"
     else:
         clean = url.split("?")[0].rstrip("/")
+    if not _is_valid_page_url(clean):
+        return
     if data.get(account) != clean:
         data[account] = clean
         PAGE_URLS_PATH.write_text(json.dumps(data, indent=2) + "\n")
@@ -511,6 +534,8 @@ def _setup_session(page, account_name: str = ""):
     # Fast path: if browser is already on the cached page, skip navigation entirely
     if account_name:
         cached_url = _load_page_urls().get(account_name)
+        if cached_url and not _is_valid_page_url(cached_url):
+            cached_url = None  # stale/bad cache entry — ignore it
         if cached_url:
             cached_id = cached_url.rstrip("/").split("/")[-1]
             current = page.url
@@ -524,10 +549,12 @@ def _setup_session(page, account_name: str = ""):
         js_navigate(page, "https://www.facebook.com/")
         human_pause(2.0, 3.0)
 
-    # Navigate to cached URL if we're not already on the right page
+    # Navigate to cached URL if we're anywhere on Facebook but not the right page
     if account_name:
         cached_url = _load_page_urls().get(account_name)
-        if cached_url and page.url in base_urls:
+        if cached_url and not _is_valid_page_url(cached_url):
+            cached_url = None
+        if cached_url and "facebook.com" in page.url:
             print(f"Using cached page URL: {cached_url}")
             js_navigate(page, cached_url)
             try:
@@ -605,6 +632,7 @@ def _setup_session(page, account_name: str = ""):
                 "privacy", "policies", "terms", "about", "business", "ads",
                 "friends", "memories", "saved", "videos", "photos", "reels",
                 "fundraisers", "climate", "jobs", "professional-dashboard",
+                "professional_dashboard", "dashboard", "creatorstudio",
                 "facebook", "messenger", "instagram",
             }
             EXCLUDED_PARAMS = {"action=", "story_fbid", "__cft__"}
