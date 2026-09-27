@@ -132,14 +132,16 @@ def main():
                         help="Max seconds between posts (default: 90)")
     args = parser.parse_args()
 
-    if not Path(args.posts).exists():
-        print(f"Error: posts file not found: {args.posts}")
-        sys.exit(1)
-
     if args.profiles:
         profiles = [p.strip() for p in args.profiles.split(",")]
     else:
         profiles = all_profiles
+
+    posts_path_obj = Path(args.posts)
+    has_per_profile = any((ROOT / f"posts_{p}.txt").exists() for p in profiles)
+    if not posts_path_obj.exists() and not has_per_profile:
+        print(f"Error: posts file not found: {args.posts} and no per-profile posts files exist.")
+        sys.exit(1)
 
     if not profiles:
         print("No profiles to run.")
