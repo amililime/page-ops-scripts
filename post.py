@@ -712,7 +712,7 @@ def post_with_cdp(cdp_url, posts_path, min_delay=DEFAULT_MIN_DELAY, max_delay=DE
 
         for i, post in enumerate(posts):
             image_path = IMAGES_DIR / f"post_{i + 1}.jpg"
-            should_navigate = (i == 0) or not page.url.startswith(active_page_url.split("?")[0])
+            should_navigate = True
             publish_post(
                 page, post, i, active_page_url,
                 image_path if image_path.exists() else None,
